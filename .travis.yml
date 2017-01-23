@@ -7,7 +7,7 @@ script: tools/scripts/makeall
 
 before_install:
   - sudo apt-get -qq update
-  - sudo apt-get install -y gcc-arm-none-eabi
+  - sudo apt-get install -y gcc-arm-linux-gnueabihf
   - sudo apt-get install -y gcc-aarch64-linux-gnu
 
 notifications:
