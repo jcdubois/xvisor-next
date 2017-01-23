@@ -670,7 +670,7 @@ int mmu_lpae_stage2_chttbl(u8 vmid, struct cpu_ttbl *ttbl)
 
 #define PHYS_RW_TTE_NOCACHE						\
 	(PHYS_RW_TTE |							\
-	 ((AINDEX_SO << TTBL_STAGE1_LOWER_AINDEX_SHIFT) &		\
+	 ((AINDEX_NORMAL_NC << TTBL_STAGE1_LOWER_AINDEX_SHIFT) &	\
 	    TTBL_STAGE1_LOWER_AINDEX_MASK))
 
 #define PHYS_RW_TTE_CACHE						\
@@ -831,7 +831,7 @@ int __cpuinit arch_cpu_aspace_memory_rwinit(virtual_addr_t tmp_va)
 	p.xn = 1;
 	p.ns = 1;
 	p.sh = TTBL_SH_INNER_SHAREABLE;
-	p.aindex = AINDEX_SO;
+	p.aindex = AINDEX_NORMAL_NC;
 
 	rc = mmu_lpae_map_hypervisor_page(&p);
 	if (rc) {
@@ -879,15 +879,14 @@ int arch_cpu_aspace_map(virtual_addr_t page_va,
 		p.aindex = AINDEX_NORMAL_WT;
 	} else if (mem_flags & VMM_MEMORY_BUFFERABLE) {
 		p.aindex = AINDEX_NORMAL_WB;
+	} else if (mem_flags & VMM_MEMORY_IO_DEVICE) {
+		p.aindex = AINDEX_DEVICE_nGnRE;
+	} else if (mem_flags & VMM_MEMORY_DMA_COHERENT) {
+		p.aindex = AINDEX_NORMAL_WB;
+	} else if (mem_flags & VMM_MEMORY_DMA_NONCOHERENT) {
+		p.aindex = AINDEX_NORMAL_NC;
 	} else {
-		p.aindex = AINDEX_SO;
-	}
-
-	/* Force strongly-ordered non-cacheable device
-	 * memory when dma-coherent memory is required.
-	 */
-	if (mem_flags & VMM_MEMORY_DMACOHERENT) {
-		p.aindex = AINDEX_SO;
+		p.aindex = AINDEX_DEVICE_nGnRnE;
 	}
 
 	return mmu_lpae_map_hypervisor_page(&p);

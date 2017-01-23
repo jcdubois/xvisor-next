@@ -23,7 +23,6 @@
  */
 
 #include <vmm_types.h>
-#include <cpu_defines.h>
 #include <cpu_mmu_lpae.h>
 #include <mmu_lpae.h>
 
@@ -223,7 +222,7 @@ void __attribute__ ((section(".entry")))
 			     defterm_early_va,
 			     defterm_early_va + TTBL_L3_BLOCK_SIZE,
 			     (virtual_addr_t)CONFIG_DEFTERM_EARLY_BASE_PA,
-			     AINDEX_SO, TRUE);
+			     AINDEX_DEVICE_nGnRE, TRUE);
 #endif
 
 	/* Map physical = logical
