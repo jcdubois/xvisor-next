@@ -8,9 +8,10 @@ compiler:
 script: tools/scripts/makeall
 
 before_install:
+  - sudo add-apt-repository ppa:team-gcc-arm-embedded/ppa -y
   - sudo apt-get -qq update
-  - sudo apt-get install -y gcc-4.9-arm-linux-gnueabihf
-  - sudo apt-get install -y gcc-4.9-aarch64-linux-gnu
+  - sudo apt-get install -y gcc-arm-none-eabi
+  - sudo apt-get install -y gcc-aarch64-linux-gnu
 
 notifications:
   email:
