@@ -27,3 +27,5 @@ addons:
     build_command_prepend: "echo no configure"
     build_command:   "tools/scripts/makeall"
     branch_pattern: coverity_scan
+
+script: tools/scripts/makeall
