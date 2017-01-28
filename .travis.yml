@@ -15,7 +15,5 @@ before_install:
 
 notifications:
   email:
-    recipients:
-      - jcd@tribudubois.net
     on_success: change
     on_failure: always
