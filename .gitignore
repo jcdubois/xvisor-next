@@ -24,7 +24,6 @@ flash
 #
 # Exceptions
 #
-!.mambacfg
 !.gitignore
 !.gitmodules
 !.travis.yml
