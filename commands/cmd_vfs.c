@@ -6,12 +6,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
@@ -81,6 +81,10 @@ static void cmd_vfs_usage(struct vmm_chardev *cdev)
 	vmm_cprintf(cdev, "   vfs module_load <path_to_module_file>\n");
 	vmm_cprintf(cdev, "   vfs fdt_load <devtree_path> "
 			  "<devtree_root_name> <path_to_fdt_file> "
+			  "[<alias0>,<attr_name>,<attr_type>,<value>] "
+			  "[<alias1>,<attr_name>,<attr_type>,<value>] ...\n");
+	vmm_cprintf(cdev, "   vfs guest_fdt_load <guest_name> "
+			  "<path_to_fdt_file> <vcpu_count> "
 			  "[<alias0>,<attr_name>,<attr_type>,<value>] "
 			  "[<alias1>,<attr_name>,<attr_type>,<value>] ...\n");
 	vmm_cprintf(cdev, "   vfs host_load <host_phys_addr> "
@@ -369,14 +373,66 @@ closedir_fail:
 	return rc;
 }
 
-static int cmd_vfs_file_open_read(struct vmm_chardev *cdev, const char *path,
+static int cmd_vfs_file_parent_dir(struct vmm_chardev *cdev,
+				   const char *path,
+				   char *out, size_t out_sz)
+{
+	size_t out_len;
+	int rc = VMM_OK;
+	struct stat st;
+
+	rc = vfs_stat(path, &st);
+	if (rc) {
+		vmm_cprintf(cdev, "Failed to stat %s\n", path);
+		return rc;
+	}
+
+	if (!(st.st_mode & S_IFREG)) {
+		vmm_cprintf(cdev, "Cannot read %s\n", path);
+		return VMM_EINVALID;
+	}
+
+	out_len = strlcpy(out, path, out_sz);
+	while (out_len) {
+		if (out[out_len - 1] == '/') {
+			out[out_len - 1] = '\0';
+			break;
+		}
+		out_len--;
+	}
+
+	return VMM_OK;
+}
+
+static int cmd_vfs_file_open_read(struct vmm_chardev *cdev,
+				  const char *curdir,
+				  const char *path,
 				  int *fdp, u32 *len)
 {
 	int rc = VMM_OK;
 	int fd = -1;
 	struct stat st;
+	char *npath = NULL;
 
-	fd = vfs_open(path, O_RDONLY, 0);
+	while (*path == ' ') {
+		path++;
+	}
+
+	if (*path == '.' && *(path + 1) == '/' && curdir) {
+		npath = vmm_zalloc(VFS_MAX_PATH * 2);
+		if (!npath) {
+			vmm_cprintf(cdev,
+				    "Failed to alloc new path buffer\n");
+			return VMM_ENOMEM;
+		}
+		path++;
+		strlcpy(npath, curdir, VFS_MAX_PATH * 2);
+		strlcat(npath, path, VFS_MAX_PATH * 2);
+		fd = vfs_open(npath, O_RDONLY, 0);
+		vmm_free(npath);
+	} else {
+		fd = vfs_open(path, O_RDONLY, 0);
+	}
 	if (fd < 0) {
 		vmm_cprintf(cdev, "Failed to open %s\n", path);
 		return fd;
@@ -412,15 +468,12 @@ static size_t cmd_vfs_file_buf_read(int fd, char buf[], u32 len)
 static int cmd_vfs_run(struct vmm_chardev *cdev, const char *path)
 {
 	int fd, rc;
-	u32 len;
-	size_t buf_rd;
+	u32 line, len;
+	loff_t buf_off;
+	size_t end, buf_rd, buf_valid;
 	char *buf = NULL;
-	u32 tok_len;
-	char *token, *save;
-	const char *delim = "\n";
-	u32 end, cleanup = 0;
 
-	rc = cmd_vfs_file_open_read(cdev, path, &fd, &len);
+	rc = cmd_vfs_file_open_read(cdev, NULL, path, &fd, &len);
 	if (VMM_OK != rc) {
 		return rc;
 	}
@@ -431,33 +484,51 @@ static int cmd_vfs_run(struct vmm_chardev *cdev, const char *path)
 		return VMM_ENOMEM;
 	}
 
+	line = 0;
+	buf_off = 0;
 	while (len) {
-		buf_rd = cmd_vfs_file_buf_read(fd, buf, len);
+		buf_rd = cmd_vfs_file_buf_read(fd, buf, VFS_LOAD_BUF_SZ);
 		if (buf_rd < 1) {
 			break;
 		}
 
-		end = buf_rd - 1;
-		while (buf[end] != '\n') {
-			buf[end] = 0;
-			end--;
-			cleanup++;
+		for (end = 0; end < buf_rd; end++) {
+			if (buf[end] == '\n' ||
+			    buf[end] == '\r' ||
+			    buf[end] == '\0')
+				break;
 		}
 
-		if (cleanup) {
-			vfs_lseek(fd, (buf_rd - cleanup), SEEK_SET);
-			cleanup = 0;
+		if (end == buf_rd) {
+			vmm_cprintf(cdev, "line%d: failed to find end-of-line"
+				    " (%zd bytes)\n", line, buf_rd);
+			break;
 		}
 
-		for (token = strtok_r(buf, delim, &save); token;
-		     token = strtok_r(NULL, delim, &save)) {
-			tok_len = strlen(token);
-			if (*token != '#' && *token != '\n') {
-				vmm_cmdmgr_execute_cmdstr(cdev, token, NULL);
+		buf[end] = '\0';
+		buf_valid = end + 1;
+
+		if (buf_valid < buf_rd) {
+			vfs_lseek(fd, buf_off + buf_valid, SEEK_SET);
+		}
+
+		for (end = 0; end < buf_valid; end++) {
+			if (buf[end] == '#') {
+				buf[end] = '\0';
+				break;
 			}
-
-			len -= (tok_len + 1);
 		}
+
+		rc = vmm_cmdmgr_execute_cmdstr(cdev, buf, NULL);
+		if (rc) {
+			vmm_cprintf(cdev, "line%d: failed (error %d)\n",
+				    line, rc);
+			break;
+		}
+
+		buf_off += buf_valid;
+		len -= buf_valid;
+		line++;
 	}
 
 	vmm_free(buf);
@@ -480,7 +551,7 @@ static int cmd_vfs_md5(struct vmm_chardev *cdev, const char *path)
 	struct md5_context md5c;
 	u8 digest[16];
 
-	rc = cmd_vfs_file_open_read(cdev, path, &fd, &len);
+	rc = cmd_vfs_file_open_read(cdev, NULL, path, &fd, &len);
 	if (VMM_OK != rc) {
 		return rc;
 	}
@@ -529,7 +600,7 @@ static int cmd_vfs_sha256(struct vmm_chardev *cdev, const char *path)
 	struct sha256_context sha256c;
 	sha256_digest_t digest;
 
-	rc = cmd_vfs_file_open_read(cdev, path, &fd, &len);
+	rc = cmd_vfs_file_open_read(cdev, NULL, path, &fd, &len);
 	if (VMM_OK != rc) {
 		return rc;
 	}
@@ -576,7 +647,7 @@ static int cmd_vfs_cat(struct vmm_chardev *cdev, const char *path)
 	size_t buf_rd;
 	char *buf = NULL;
 
-	rc = cmd_vfs_file_open_read(cdev, path, &fd, &len);
+	rc = cmd_vfs_file_open_read(cdev, NULL, path, &fd, &len);
 	if (VMM_OK != rc) {
 		return rc;
 	}
@@ -702,7 +773,7 @@ static int cmd_vfs_module_load(struct vmm_chardev *cdev, const char *path)
 	size_t module_rd;
 	void *module_data;
 
-	rc = cmd_vfs_file_open_read(cdev, path, &fd, &len);
+	rc = cmd_vfs_file_open_read(cdev, NULL, path, &fd, &len);
 	if (VMM_OK != rc) {
 		goto fail;
 	}
@@ -780,7 +851,7 @@ static int cmd_vfs_fdt_load(struct vmm_chardev *cdev,
 		goto fail;
 	}
 
-	rc = cmd_vfs_file_open_read(cdev, path, &fd, &len);
+	rc = cmd_vfs_file_open_read(cdev, NULL, path, &fd, &len);
 	if (VMM_OK != rc) {
 		goto fail;
 	}
@@ -995,9 +1066,106 @@ fail:
 	return rc;
 }
 
+static int cmd_vfs_guest_fdt_load(struct vmm_chardev *cdev,
+				  const char *guest_name,
+				  const char *path,
+				  u32 vcpu_count,
+				  int aliasc, char **aliasv)
+{
+	int rc;
+	u32 i;
+	char name[VMM_FIELD_SHORT_NAME_SIZE];
+	struct vmm_devtree_node *guests_node, *guest_node;
+	struct vmm_devtree_node *vcpu_tmpl_node, *vcpus_node, *vcpu_node;
+
+	if (!vcpu_count) {
+		vmm_cprintf(cdev, "VCPU count should be non-zero\n");
+		return VMM_EINVALID;
+	}
+
+	guests_node = vmm_devtree_getnode(VMM_DEVTREE_PATH_SEPARATOR_STRING
+					  VMM_DEVTREE_GUESTINFO_NODE_NAME);
+	if (!guests_node) {
+		vmm_cprintf(cdev, "%s DT node not found\n",
+			    VMM_DEVTREE_GUESTINFO_NODE_NAME);
+		return VMM_ENOTAVAIL;
+	}
+
+	rc = cmd_vfs_fdt_load(cdev, VMM_DEVTREE_PATH_SEPARATOR_STRING
+			      VMM_DEVTREE_GUESTINFO_NODE_NAME, guest_name,
+			      path, aliasc, aliasv);
+	if (VMM_OK != rc) {
+		vmm_cprintf(cdev, "Failed to load fdt (error %d)\n", rc);
+		vmm_devtree_dref_node(guests_node);
+		return rc;
+	}
+
+	guest_node = vmm_devtree_getchild(guests_node, guest_name);
+	vmm_devtree_dref_node(guests_node);
+	if (!guest_node) {
+		vmm_cprintf(cdev, "Failed to get guest DT node\n");
+		return VMM_ENOTAVAIL;
+	}
+
+	vcpu_tmpl_node = vmm_devtree_getchild(guest_node,
+					  VMM_DEVTREE_VCPU_TEMPLATE_NODE_NAME);
+	if (!vcpu_tmpl_node) {
+		vmm_cprintf(cdev, "Failed to get vcpu template DT node\n");
+		vmm_devtree_dref_node(guest_node);
+		vmm_devtree_delnode(guest_node);
+		return VMM_ENOTAVAIL;
+	}
+
+	vcpus_node = vmm_devtree_addnode(guest_node,
+					 VMM_DEVTREE_VCPUS_NODE_NAME);
+	if (!vcpus_node) {
+		return VMM_EFAIL;
+		vmm_cprintf(cdev, "Failed to add vcpus DT node\n");
+		vmm_devtree_dref_node(vcpu_tmpl_node);
+		vmm_devtree_dref_node(guest_node);
+		vmm_devtree_delnode(guest_node);
+	}
+
+	for (i = 0; i < vcpu_count; i++) {
+		vmm_snprintf(name, sizeof(name), "vcpu%d", i);
+		rc  = vmm_devtree_copynode(vcpus_node, name, vcpu_tmpl_node);
+		if (rc) {
+			vmm_cprintf(cdev, "Failed to add %s DT node\n", name);
+			vmm_devtree_dref_node(vcpu_tmpl_node);
+			vmm_devtree_dref_node(guest_node);
+			vmm_devtree_delnode(guest_node);
+			return rc;
+		}
+
+		if (i) {
+			continue;
+		}
+
+		vcpu_node = vmm_devtree_getchild(vcpus_node, name);
+		if (!vcpu_node) {
+			vmm_cprintf(cdev, "Failed to find %s DT node\n", name);
+			vmm_devtree_dref_node(vcpu_tmpl_node);
+			vmm_devtree_dref_node(guest_node);
+			vmm_devtree_delnode(guest_node);
+			return rc;
+		}
+
+		/* Remove "poweroff" DT prop (if present) for first VCPU */
+		vmm_devtree_delattr(vcpu_node,
+				    VMM_DEVTREE_VCPU_POWEROFF_ATTR_NAME);
+		vmm_devtree_dref_node(vcpu_node);
+	}
+
+	vmm_devtree_dref_node(vcpu_tmpl_node);
+	vmm_devtree_dref_node(guest_node);
+
+	return VMM_OK;
+}
+
 static int cmd_vfs_load(struct vmm_chardev *cdev,
 			struct vmm_guest *guest,
 			physical_addr_t pa,
+			const char *curdir,
 			const char *path, u32 off, u32 len)
 {
 	int fd, rc;
@@ -1006,7 +1174,7 @@ static int cmd_vfs_load(struct vmm_chardev *cdev,
 	size_t buf_wr, buf_rd, buf_count, wr_count;
 	char *buf = NULL;
 
-	rc = cmd_vfs_file_open_read(cdev, path, &fd, &len);
+	rc = cmd_vfs_file_open_read(cdev, curdir, path, &fd, &len);
 	if (VMM_OK != rc) {
 		return rc;
 	}
@@ -1126,9 +1294,24 @@ static int cmd_vfs_load_list(struct vmm_chardev *cdev,
 	char *buf = NULL;
 	char *buf_save = NULL;
 	char *token = NULL;
+	char *curdir = NULL;
 
-	rc = cmd_vfs_file_open_read(cdev, path, &fd, &len);
+	if (NULL == (curdir = vmm_zalloc(VFS_MAX_PATH))) {
+		vmm_cprintf(cdev, "Failed to alloc current dir buffer\n");
+		return VMM_ENOMEM;
+	}
+
+	rc = cmd_vfs_file_parent_dir(cdev, path, curdir, VFS_MAX_PATH);
 	if (VMM_OK != rc) {
+		vmm_free(curdir);
+		vmm_cprintf(cdev, "Failed to find parent dir of %s\n", path);
+		return rc;
+	}
+
+	rc = cmd_vfs_file_open_read(cdev, NULL, path, &fd, &len);
+	if (VMM_OK != rc) {
+		vmm_free(curdir);
+		vmm_cprintf(cdev, "Failed to open %s\n", path);
 		return rc;
 	}
 
@@ -1137,8 +1320,12 @@ static int cmd_vfs_load_list(struct vmm_chardev *cdev,
 			    VFS_LOAD_BUF_SZ);
 	}
 
+	vmm_cprintf(cdev, "%s: Parsing %s\n",
+		    (guest) ? (guest->name) : "host", path);
+
 	if (NULL == (buf = vmm_malloc(VFS_LOAD_BUF_SZ))) {
 		vfs_close(fd);
+		vmm_free(curdir);
 		vmm_cprintf(cdev, "Failed to allocate buffer\n");
 		return VMM_ENOMEM;
 	}
@@ -1148,6 +1335,7 @@ static int cmd_vfs_load_list(struct vmm_chardev *cdev,
 	if (len < 0) {
 		vmm_free(buf_save);
 		vfs_close(fd);
+		vmm_free(curdir);
 		vmm_cprintf(cdev, "Failed to read %s, error %d\n", path, len);
 		return len;
 	}
@@ -1165,7 +1353,8 @@ static int cmd_vfs_load_list(struct vmm_chardev *cdev,
 			    (guest) ? (guest->name) : "host",
 			    pa, token);
 
-		rc = cmd_vfs_load(cdev, guest, pa, token, 0, 0xFFFFFFFF);
+		rc = cmd_vfs_load(cdev, guest, pa,
+				  curdir, token, 0, 0xFFFFFFFF);
 		if (rc) {
 			vmm_cprintf(cdev, "error %d\n", rc);
 			break;
@@ -1174,6 +1363,7 @@ static int cmd_vfs_load_list(struct vmm_chardev *cdev,
 
 	vmm_free(buf_save);
 	rc = vfs_close(fd);
+	vmm_free(curdir);
 	if (rc) {
 		vmm_cprintf(cdev, "Failed to close %s\n", path);
 		return rc;
@@ -1234,11 +1424,15 @@ static int cmd_vfs_exec(struct vmm_chardev *cdev, int argc, char **argv)
 	} else if ((strcmp(argv[1], "fdt_load") == 0) && (argc >= 5)) {
 		return cmd_vfs_fdt_load(cdev, argv[2], argv[3], argv[4],
 					argc-5, (argc-5) ? &argv[5] : NULL);
+	} else if ((strcmp(argv[1], "guest_fdt_load") == 0) && (argc >= 5)) {
+		off = (argc > 4) ? strtoul(argv[4], NULL, 0) : 0;
+		return cmd_vfs_guest_fdt_load(cdev, argv[2], argv[3], off,
+					argc-5, (argc-5) ? &argv[5] : NULL);
 	} else if ((strcmp(argv[1], "host_load") == 0) && (argc > 3)) {
 		pa = (physical_addr_t)strtoull(argv[2], NULL, 0);
 		off = (argc > 4) ? strtoul(argv[4], NULL, 0) : 0;
 		len = (argc > 5) ? strtoul(argv[5], NULL, 0) : 0xFFFFFFFF;
-		return cmd_vfs_load(cdev, NULL, pa, argv[3], off, len);
+		return cmd_vfs_load(cdev, NULL, pa, NULL, argv[3], off, len);
 	} else if ((strcmp(argv[1], "host_load_list") == 0) && (argc == 3)) {
 		return cmd_vfs_load_list(cdev, NULL, argv[2]);
 	} else if ((strcmp(argv[1], "guest_load") == 0) && (argc > 4)) {
@@ -1251,7 +1445,7 @@ static int cmd_vfs_exec(struct vmm_chardev *cdev, int argc, char **argv)
 		pa = (physical_addr_t)strtoull(argv[3], NULL, 0);
 		off = (argc > 5) ? strtoul(argv[5], NULL, 0) : 0;
 		len = (argc > 6) ? strtoul(argv[6], NULL, 0) : 0xFFFFFFFF;
-		return cmd_vfs_load(cdev, guest, pa, argv[4], off, len);
+		return cmd_vfs_load(cdev, guest, pa, NULL, argv[4], off, len);
 	} else if ((strcmp(argv[1], "guest_load_list") == 0) && (argc == 4)) {
 		guest = vmm_manager_guest_find(argv[2]);
 		if (!guest) {

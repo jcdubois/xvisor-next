@@ -28,6 +28,7 @@
 #include <vmm_host_aspace.h>
 #include <vmm_modules.h>
 #include <vmm_devdrv.h>
+#include <block/vmm_blockrq.h>
 #include <libs/mathlib.h>
 #include <libs/stringlib.h>
 #include <drv/rbd.h>
@@ -42,39 +43,40 @@
 static LIST_HEAD(rbd_list);
 static DEFINE_SPINLOCK(rbd_list_lock);
 
-static int rbd_make_request(struct vmm_request_queue *rq,
-			    struct vmm_request *r)
+static int rbd_read_cache(struct vmm_blockrq *brq,
+			  struct vmm_request *r, void *priv)
 {
-	struct rbd *d = rq->priv;
+	struct rbd *d = priv;
 	physical_addr_t pa;
 	physical_size_t sz;
 
 	pa = d->addr + r->lba * RBD_BLOCK_SIZE;
 	sz = r->bcnt * RBD_BLOCK_SIZE;
 
-	switch (r->type) {
-	case VMM_REQUEST_READ:
-		vmm_host_memory_read(pa, r->data, sz, TRUE);
-		vmm_blockdev_complete_request(r);
-		break;
-	case VMM_REQUEST_WRITE:
-		vmm_host_memory_write(pa, r->data, sz, TRUE);
-		vmm_blockdev_complete_request(r);
-		break;
-	default:
-		vmm_blockdev_fail_request(r);
-		break;
-	};
+	vmm_host_memory_read(pa, r->data, sz, TRUE);
 
 	return VMM_OK;
 }
 
-static int rbd_abort_request(struct vmm_request_queue *rq,
-			     struct vmm_request *r)
+static int rbd_write_cache(struct vmm_blockrq *brq,
+			   struct vmm_request *r, void *priv)
 {
-	/* Do nothing to abort */
+	struct rbd *d = priv;
+	physical_addr_t pa;
+	physical_size_t sz;
+
+	pa = d->addr + r->lba * RBD_BLOCK_SIZE;
+	sz = r->bcnt * RBD_BLOCK_SIZE;
+
+	vmm_host_memory_write(pa, r->data, sz, TRUE);
+
 	return VMM_OK;
 }
+
+static struct vmm_blockrq_ops rbd_rq_ops = {
+	.read_cache = rbd_read_cache,
+	.write_cache = rbd_write_cache
+};
 
 static struct rbd *__rbd_create(struct vmm_device *dev,
 				const char *name,
@@ -84,6 +86,7 @@ static struct rbd *__rbd_create(struct vmm_device *dev,
 {
 	struct rbd *d;
 	irq_flags_t flags;
+	struct vmm_blockrq *brq;
 
 	if (!name) {
 		return NULL;
@@ -113,14 +116,11 @@ static struct rbd *__rbd_create(struct vmm_device *dev,
 	d->bdev->block_size = RBD_BLOCK_SIZE;
 
 	/* Setup request queue for block device instance */
-	d->bdev->rq = vmm_zalloc(sizeof(struct vmm_request_queue));
-	if (!d->bdev->rq) {
+	brq = vmm_blockrq_create(name, 8, FALSE, &rbd_rq_ops, d);
+	if (!brq) {
 		goto free_bdev;
 	}
-	INIT_REQUEST_QUEUE(d->bdev->rq);
-	d->bdev->rq->make_request = rbd_make_request;
-	d->bdev->rq->abort_request = rbd_abort_request;
-	d->bdev->rq->priv = d;
+	d->bdev->rq = vmm_blockrq_to_rq(brq);
 
 	/* Register block device instance */
 	if (vmm_blockdev_register(d->bdev)) {
@@ -155,7 +155,7 @@ static struct rbd *__rbd_create(struct vmm_device *dev,
 unreg_bdev:
 	vmm_blockdev_unregister(d->bdev);
 free_bdev_rq:
-	vmm_free(d->bdev->rq);
+	vmm_blockrq_destroy(vmm_rq_to_blockrq(d->bdev->rq));
 free_bdev:
 	vmm_blockdev_free(d->bdev);
 free_rbd:
@@ -194,7 +194,7 @@ void rbd_destroy(struct rbd *d)
 	vmm_blockdev_unregister(d->bdev);
 
 	/* Free block device request queue */
-	vmm_free(d->bdev->rq);
+	vmm_blockrq_destroy(vmm_rq_to_blockrq(d->bdev->rq));
 
 	/* Free block device */
 	vmm_blockdev_free(d->bdev);
@@ -291,8 +291,7 @@ u32 rbd_count(void)
 }
 VMM_EXPORT_SYMBOL(rbd_count);
 
-static int rbd_driver_probe(struct vmm_device *dev,
-			    const struct vmm_devtree_nodeid *devid)
+static int rbd_driver_probe(struct vmm_device *dev)
 {
 	int rc;
 	physical_addr_t pa;

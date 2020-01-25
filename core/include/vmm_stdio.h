@@ -27,6 +27,8 @@
 #include <vmm_compiler.h>
 #include <libs/stacktrace.h>
 
+#include <stdarg.h>
+
 #define BUG_ON(x)							\
 	do {								\
 		if (unlikely(x)) {					\
@@ -79,7 +81,7 @@ struct vmm_history {
 			(h)->table[iter][0] = '\0';			\
 		}							\
 		(h)->tail = 0;						\
-	}								
+	}
 
 /** Cleanup vmm_history pointer */
 #define CLEANUP_HISTORY(h)						\
@@ -113,6 +115,12 @@ void vmm_cputs(struct vmm_chardev *cdev, char *str);
 /** Put string to default device */
 void vmm_puts(char *str);
 
+/** Print formatted string to another string with pre-parsed variable args
+ *  Note: Don't use this API directly unless you are familiar with variable
+ *  args parsing.
+ */
+int __vmm_snprintf(char *out, u32 out_sz, const char *format, va_list args);
+
 /** Print formatted string to another string */
 int __printf(2, 3) vmm_sprintf(char *out, const char *format, ...);
 
@@ -125,7 +133,20 @@ int __printf(2, 3) vmm_cprintf(struct vmm_chardev *cdev,
 				const char *format, ...);
 
 /** Print formatted string to default device */
-#define vmm_printf(args...)	vmm_cprintf(NULL, args)
+int __printf(1, 2) vmm_printf(const char *format, ...);
+
+/** Print formatted string to default device at boot-time */
+int __printf(1, 2) vmm_init_printf(const char *format, ...);
+
+/** Print contents of some data in hex format */
+void vmm_chexdump(struct vmm_chardev *cdev,
+		  u64 print_base_addr, void *data, u64 len);
+
+/** Print version string to character device */
+void vmm_cprintver(struct vmm_chardev *cdev);
+
+/** Print version string to default device */
+#define vmm_printver()	vmm_cprintver(NULL)
 
 /** Predefined log levels */
 enum vmm_print_level {

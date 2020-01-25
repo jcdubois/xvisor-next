@@ -6,12 +6,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
@@ -46,18 +46,24 @@ struct vmm_host_ram_bank {
 };
 
 struct vmm_host_ram_ctrl {
+	struct vmm_host_ram_color_ops *ops;
+	void *ops_priv;
 	u32 bank_count;
 	struct vmm_host_ram_bank banks[CONFIG_MAX_RAM_BANK_COUNT];
 };
 
 static struct vmm_host_ram_ctrl rctrl;
 
-physical_size_t vmm_host_ram_alloc(physical_addr_t *pa,
-				   physical_size_t sz,
-				   u32 align_order)
+static physical_size_t __host_ram_alloc(physical_addr_t *pa,
+					physical_size_t sz,
+					u32 align_order,
+					u32 color,
+					struct vmm_host_ram_color_ops *ops,
+					void *ops_priv)
 {
-	irq_flags_t flags;
-	u32 i, found, bn, binc, bcnt, bpos, bfree;
+	irq_flags_t f;
+	physical_addr_t p;
+	u32 i, bn, binc, bcnt, bpos, bfree;
 	struct vmm_host_ram_bank *bank;
 
 	if ((sz == 0) ||
@@ -72,14 +78,13 @@ physical_size_t vmm_host_ram_alloc(physical_addr_t *pa,
 	for (bn = 0; bn < rctrl.bank_count; bn++) {
 		bank = &rctrl.banks[bn];
 
-		vmm_spin_lock_irqsave_lite(&bank->bmap_lock, flags);
+		vmm_spin_lock_irqsave_lite(&bank->bmap_lock, f);
 
 		if (bank->bmap_free < bcnt) {
-			vmm_spin_unlock_irqrestore_lite(&bank->bmap_lock, flags);
+			vmm_spin_unlock_irqrestore_lite(&bank->bmap_lock, f);
 			continue;
 		}
 
-		found = 0;
 		binc = order_size(align_order) >> VMM_PAGE_SHIFT;
 		bpos = bank->start & order_mask(align_order);
 		if (bpos) {
@@ -93,40 +98,121 @@ physical_size_t vmm_host_ram_alloc(physical_addr_t *pa,
 				}
 				bfree++;
 			}
-			if (bfree == bcnt) {
-				found = 1;
-				break;
-			}
+			if (bfree != bcnt)
+				continue;
+
+			p = bank->start + bpos * VMM_PAGE_SIZE;
+
+			if (ops && !ops->color_match(p, sz, color, ops_priv))
+				continue;
+
+			*pa = p;
+			bitmap_set(bank->bmap, bpos, bcnt);
+			bank->bmap_free -= bcnt;
+
+			vmm_spin_unlock_irqrestore_lite(&bank->bmap_lock, f);
+
+			return sz;
 		}
-		if (!found) {
-			vmm_spin_unlock_irqrestore_lite(&bank->bmap_lock, flags);
-			continue;
-		}
 
-		*pa = bank->start + bpos * VMM_PAGE_SIZE;
-		bitmap_set(bank->bmap, bpos, bcnt);
-		bank->bmap_free -= bcnt;
-
-		vmm_spin_unlock_irqrestore_lite(&bank->bmap_lock, flags);
-
-		return sz;
+		vmm_spin_unlock_irqrestore_lite(&bank->bmap_lock, f);
 	}
 
 	return 0;
+}
+
+static u32 default_num_colors(void *priv)
+{
+	return U32_MAX;
+}
+
+static u32 default_color_order(void *priv)
+{
+	return 16;
+}
+
+static bool default_color_match(physical_addr_t pa, physical_size_t sz,
+				u32 color, void *priv)
+{
+	return TRUE;
+}
+
+static struct vmm_host_ram_color_ops default_ops = {
+	.name = "default",
+	.num_colors = default_num_colors,
+	.color_order = default_color_order,
+	.color_match = default_color_match,
+};
+
+void vmm_host_ram_set_color_ops(struct vmm_host_ram_color_ops *ops,
+				void *priv)
+{
+	if (ops) {
+		if (!ops->num_colors ||
+		    !ops->color_order ||
+		    !ops->color_match) {
+			return;
+		}
+		if (!ops->num_colors(priv) ||
+		    (ops->color_order(priv) < VMM_PAGE_SHIFT) ||
+		    (BITS_PER_LONG <= ops->color_order(priv))) {
+			return;
+		}
+		rctrl.ops = ops;
+		rctrl.ops_priv = priv;
+	} else {
+		rctrl.ops = &default_ops;
+		rctrl.ops_priv = NULL;
+	}
+}
+
+const char *vmm_host_ram_color_ops_name(void)
+{
+	return rctrl.ops->name;
+}
+
+u32 vmm_host_ram_color_count(void)
+{
+	return rctrl.ops->num_colors(rctrl.ops_priv);
+}
+
+u32 vmm_host_ram_color_order(void)
+{
+	return rctrl.ops->color_order(rctrl.ops_priv);
+}
+
+physical_size_t vmm_host_ram_color_alloc(physical_addr_t *pa, u32 color)
+{
+	u32 order = rctrl.ops->color_order(rctrl.ops_priv);
+
+	if (rctrl.ops->num_colors(rctrl.ops_priv) <= color)
+		return 0;
+
+	return __host_ram_alloc(pa, (physical_size_t)1 << order, order,
+				color, rctrl.ops, rctrl.ops_priv);
+}
+
+physical_size_t vmm_host_ram_alloc(physical_addr_t *pa,
+				   physical_size_t sz,
+				   u32 align_order)
+{
+	return __host_ram_alloc(pa, sz, align_order, 0, NULL, NULL);
 }
 
 int vmm_host_ram_reserve(physical_addr_t pa, physical_size_t sz)
 {
 	int rc = VMM_EINVALID;
 	u32 i, bn, bcnt, bpos, bfree;
+	u64 bank_end, pa_end;
 	irq_flags_t flags;
 	struct vmm_host_ram_bank *bank;
 
 	for (bn = 0; bn < rctrl.bank_count; bn++) {
 		bank = &rctrl.banks[bn];
 
-		if ((pa < bank->start) ||
-		    ((bank->start + bank->size) < (pa + sz))) {
+		bank_end = (u64)bank->start + (u64)bank->size;
+		pa_end = (u64)pa + (u64)sz;
+		if ((pa < bank->start) || (bank_end < pa_end)) {
 			continue;
 		}
 
@@ -171,14 +257,16 @@ int vmm_host_ram_free(physical_addr_t pa, physical_size_t sz)
 {
 	int rc = VMM_EINVALID;
 	u32 bn, bcnt, bpos;
+	u64 bank_end, pa_end;
 	irq_flags_t flags;
 	struct vmm_host_ram_bank *bank;
 
 	for (bn = 0; bn < rctrl.bank_count; bn++) {
 		bank = &rctrl.banks[bn];
 
-		if ((pa < bank->start) ||
-		    ((bank->start + bank->size) < (pa + sz))) {
+		bank_end = (u64)bank->start + (u64)bank->size;
+		pa_end = (u64)pa + (u64)sz;
+		if ((pa < bank->start) || (bank_end < pa_end)) {
 			continue;
 		}
 
@@ -202,6 +290,7 @@ int vmm_host_ram_free(physical_addr_t pa, physical_size_t sz)
 bool vmm_host_ram_frame_isfree(physical_addr_t pa)
 {
 	u32 bn, bpos;
+	u64 bank_end;
 	bool ret = FALSE;
 	irq_flags_t flags;
 	struct vmm_host_ram_bank *bank;
@@ -209,8 +298,8 @@ bool vmm_host_ram_frame_isfree(physical_addr_t pa)
 	for (bn = 0; bn < rctrl.bank_count; bn++) {
 		bank = &rctrl.banks[bn];
 
-		if ((pa < bank->start) ||
-		    ((bank->start + bank->size) <= pa)) {
+		bank_end = (u64)bank->start + (u64)bank->size;
+		if ((pa < bank->start) || (bank_end <= pa)) {
 			continue;
 		}
 
@@ -309,7 +398,7 @@ u32 vmm_host_ram_bank_free_frames(u32 bank)
 	return ret;
 }
 
-virtual_size_t vmm_host_ram_estimate_hksize(void)
+virtual_size_t __init vmm_host_ram_estimate_hksize(void)
 {
 	int rc;
 	u32 bn, count;
@@ -342,6 +431,9 @@ int __init vmm_host_ram_init(virtual_addr_t hkbase)
 	struct vmm_host_ram_bank *bank;
 
 	memset(&rctrl, 0, sizeof(rctrl));
+
+	rctrl.ops = &default_ops;
+	rctrl.ops_priv = NULL;
 
 	if ((rc = arch_devtree_ram_bank_count(&rctrl.bank_count))) {
 		return rc;
@@ -388,9 +480,14 @@ int __init vmm_host_ram_init(virtual_addr_t hkbase)
 			return rc;
 		}
 
+		vmm_init_printf("ram: bank%d phys=0x%"PRIPADDR" size=%"PRIPSIZE"\n",
+				bn, bank->start, bank->size);
+
+		vmm_init_printf("ram: bank%d hkbase=0x%"PRIADDR" hksize=%d\n",
+				bn, hkbase, bank->bmap_sz);
+
 		hkbase += bank->bmap_sz;
 	}
 
 	return VMM_OK;
 }
-

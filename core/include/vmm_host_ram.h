@@ -25,6 +25,32 @@
 #define __VMM_HOST_RAM_H_
 
 #include <vmm_types.h>
+#include <vmm_limits.h>
+
+/** Host RAM cache color operations */
+struct vmm_host_ram_color_ops {
+	char name[VMM_FIELD_NAME_SIZE];
+	u32 (*num_colors)(void *priv);
+	u32 (*color_order)(void *priv);
+	bool (*color_match)(physical_addr_t pa, physical_size_t sz,
+			    u32 color, void *priv);
+};
+
+/** Set host RAM cache color operations */
+void vmm_host_ram_set_color_ops(struct vmm_host_ram_color_ops *ops,
+				void *priv);
+
+/** Get host RAM cache color operations name */
+const char *vmm_host_ram_color_ops_name(void);
+
+/** Get host RAM cache color count */
+u32 vmm_host_ram_color_count(void);
+
+/** Get host RAM cache color order */
+u32 vmm_host_ram_color_order(void);
+
+/** Allocate cache colored physical space from RAM */
+physical_size_t vmm_host_ram_color_alloc(physical_addr_t *pa, u32 color);
 
 /** Allocate physical space from RAM */
 physical_size_t vmm_host_ram_alloc(physical_addr_t *pa,

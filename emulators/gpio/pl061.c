@@ -36,6 +36,7 @@
 #include <vmm_heap.h>
 #include <vmm_modules.h>
 #include <vmm_devemu.h>
+#include <emu/gpio_sync.h>
 
 #undef DEBUG
 
@@ -53,6 +54,7 @@
 #define	MODULE_EXIT			pl061_emulator_exit
 
 struct pl061_state {
+	struct vmm_emudev *edev;
 	struct vmm_guest *guest;
 	vmm_spinlock_t lock;
 
@@ -150,7 +152,17 @@ static void pl061_update(struct pl061_state *s)
 static int pl061_reg_read(struct pl061_state *s,
 			  u32 offset, u32 *dst)
 {
-	int rc = VMM_OK;
+	int i, rc = VMM_OK;
+	struct gpio_emu_sync sync;
+
+	/* Syncup child GPIO slaves so that input lines are updated */
+	for (i = 0; i < 8; i++) {
+		sync.irq = s->in_irq[i];
+		vmm_devemu_sync_children(s->guest,
+					 s->edev,
+					 GPIO_EMU_SYNC_VALUE,
+					 &sync);
+	}
 
 	vmm_spin_lock(&s->lock);
 
@@ -232,7 +244,9 @@ static int pl061_reg_write(struct pl061_state *s,
 			   u32 offset, u32 regmask, u32 regval)
 {
 	u8 mask;
-	int rc = VMM_OK;
+	u32 dir;
+	int i, rc = VMM_OK;
+	struct gpio_emu_sync sync;
 
 	vmm_spin_lock(&s->lock);
 
@@ -244,6 +258,24 @@ static int pl061_reg_write(struct pl061_state *s,
 		case 0x400: /* Direction */
 			s->dir &= regmask;
 			s->dir |= (regval & 0xFF);
+			dir = s->dir;
+			vmm_spin_unlock(&s->lock);
+			for (i = 0; i < 8; i++) {
+				if (dir & (1 << i)) {
+					sync.irq = s->out_irq[i];
+					vmm_devemu_sync_children(s->guest,
+						s->edev,
+						GPIO_EMU_SYNC_DIRECTION_OUT,
+						&sync);
+				} else {
+					sync.irq = s->in_irq[i];
+					vmm_devemu_sync_children(s->guest,
+						s->edev,
+						GPIO_EMU_SYNC_DIRECTION_IN,
+						&sync);
+				}
+			}
+			vmm_spin_lock(&s->lock);
 			break;
 		case 0x404: /* Interrupt sense */
 			s->isense &= regmask;
@@ -486,7 +518,9 @@ static int pl061_emulator_probe(struct vmm_guest *guest,
 		s->id[11] = ((const u8 *)eid->data)[11];
 	}
 
-	rc = vmm_devtree_irq_get(edev->node, &s->irq, 0);
+	rc = vmm_devtree_read_u32_atindex(edev->node,
+					  VMM_DEVTREE_INTERRUPTS_ATTR_NAME,
+					  &s->irq, 0);
 	if (rc) {
 		goto pl061_emulator_probe_freestate_failed;
 	}
@@ -509,6 +543,7 @@ static int pl061_emulator_probe(struct vmm_guest *guest,
 		goto pl061_emulator_probe_freestate_failed;
 	}
 
+	s->edev = edev;
 	s->guest = guest;
 	INIT_SPIN_LOCK(&s->lock);
 

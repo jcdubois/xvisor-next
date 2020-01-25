@@ -51,7 +51,6 @@
 #define MIN_FREQ 400000
 
 struct bcm2835_sdhci_host {
-	struct sdhci_host host;
 	struct clk *clk;
 	u32 irq;
 	u32 clock_freq;
@@ -88,13 +87,7 @@ static inline void bcm2835_sdhci_raw_writel(struct sdhci_host *host, u32 val,
 
 static inline u32 bcm2835_sdhci_raw_readl(struct sdhci_host *host, int reg)
 {
-	u32 val = vmm_readl(host->ioaddr + reg);
-
-	if (reg == SDHCI_CAPABILITIES) {
-		val |= SDHCI_CAN_VDD_330;
-	}
-
-	return val;
+	return vmm_readl(host->ioaddr + reg);
 }
 
 static void bcm2835_sdhci_writel(struct sdhci_host *host, u32 val, int reg)
@@ -155,8 +148,7 @@ static u8 bcm2835_sdhci_readb(struct sdhci_host *host, int reg)
 	return byte;
 }
 
-static int bcm2835_sdhci_driver_probe(struct vmm_device *dev,
-				      const struct vmm_devtree_nodeid *devid)
+static int bcm2835_sdhci_driver_probe(struct vmm_device *dev)
 {
 	int rc;
 	struct sdhci_host *host;
@@ -194,7 +186,8 @@ static int bcm2835_sdhci_driver_probe(struct vmm_device *dev,
 	host->quirks = SDHCI_QUIRK_BROKEN_VOLTAGE |
 			SDHCI_QUIRK_BROKEN_CARD_DETECTION |
 			SDHCI_QUIRK_BROKEN_R1B |
-			SDHCI_QUIRK_WAIT_SEND_CMD;
+			SDHCI_QUIRK_WAIT_SEND_CMD |
+			SDHCI_QUIRK_NO_HISPD_BIT;
 	host->voltages = MMC_VDD_32_33 | MMC_VDD_33_34 | MMC_VDD_165_195;
 	host->max_clk = bcm_host->clock_freq;
 	host->min_clk = MIN_FREQ;

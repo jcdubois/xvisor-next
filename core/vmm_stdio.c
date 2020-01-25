@@ -22,6 +22,7 @@
  */
 
 #include <vmm_error.h>
+#include <vmm_version.h>
 #include <vmm_compiler.h>
 #include <vmm_main.h>
 #include <vmm_chardev.h>
@@ -31,8 +32,6 @@
 #include <arch_defterm.h>
 #include <libs/stringlib.h>
 #include <libs/mathlib.h>
-
-#include <stdarg.h>
 
 #define PAD_RIGHT	1
 #define PAD_ZERO	2
@@ -458,6 +457,11 @@ int vmm_sprintf(char *out, const char *format, ...)
 	return retval;
 }
 
+int __vmm_snprintf(char *out, u32 out_sz, const char *format, va_list args)
+{
+	return print(&out, &out_sz, stdio_ctrl.dev, format, args);
+}
+
 int vmm_snprintf(char *out, u32 out_sz, const char *format, ...)
 {
 	va_list args;
@@ -482,6 +486,62 @@ int vmm_cprintf(struct vmm_chardev *cdev, const char *format, ...)
 	retval = vmm_cvprintf(cdev, format, args);
 	va_end(args);
 	return retval;
+}
+
+int vmm_printf(const char *format, ...)
+{
+	va_list args;
+	int retval;
+	va_start(args, format);
+	retval = vmm_cvprintf(NULL, format, args);
+	va_end(args);
+	return retval;
+}
+
+int vmm_init_printf(const char *format, ...)
+{
+	va_list args;
+	int retval;
+	va_start(args, format);
+	vmm_cvprintf(NULL, "INIT: ", args);
+	retval = vmm_cvprintf(NULL, format, args);
+	va_end(args);
+	return retval;
+}
+
+void vmm_chexdump(struct vmm_chardev *cdev,
+		  u64 print_base_addr, void *data, u64 len)
+{
+	u64 i;
+
+	if (!data || !len) {
+		return;
+	}
+
+	for (i = 0; i < len; i++) {
+		if ((i & 0xF) == 0) {
+			vmm_cprintf(cdev, "%016"PRIx64"  %02x",
+				    (print_base_addr + i), ((u8 *)data)[i]);
+		} else if ((i & 0xF) == 0x8) {
+			vmm_cprintf(cdev, "  %02x", ((u8 *)data)[i]);
+		} else if ((i & 0xF) == 0xF) {
+			vmm_cprintf(cdev, " %02x\n", ((u8 *)data)[i]);
+		} else {
+			vmm_cprintf(cdev, " %02x", ((u8 *)data)[i]);
+		}
+	}
+}
+
+void vmm_cprintver(struct vmm_chardev *cdev)
+{
+#ifdef VMM_VERSION_GITDESC
+	vmm_cprintf(cdev, "%s %s (%s %s)\n", VMM_NAME, VMM_VERSION_GITDESC,
+		    __DATE__, __TIME__);
+#else
+	vmm_cprintf(cdev, "%s v%d.%d.%d (%s %s)\n", VMM_NAME,
+		    VMM_VERSION_MAJOR, VMM_VERSION_MINOR, VMM_VERSION_RELEASE,
+		    __DATE__, __TIME__);
+#endif
 }
 
 static int vmm_lvprintf(enum vmm_print_level level,
@@ -845,4 +905,3 @@ int __init vmm_stdio_init(void)
 
 	return VMM_OK;
 }
-

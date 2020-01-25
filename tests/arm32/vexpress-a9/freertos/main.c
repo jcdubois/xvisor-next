@@ -25,7 +25,7 @@
 #include "task.h"
 #include "queue.h"
 
-#include <arm_stdio.h>
+#include <basic_stdio.h>
 
 /* priorities at which the tasks are created. */
 #define mainQUEUE_RECEIVE_TASK_PRIORITY (tskIDLE_PRIORITY + 2)
@@ -75,7 +75,7 @@ static void send_task(void *params)
                 vTaskDelayUntil(&next_wake_time, mainQUEUE_SEND_FREQUENCY_MS);
 
 #if configUSE_TRACE_FACILITY == 1
-                arm_printf("%s @%d\n", __func__, xTaskGetTickCount());
+                basic_printf("%s @%d\n", __func__, xTaskGetTickCount());
 #endif
 
                 xQueueSend(queue_hndl, &send_val, 0U);
@@ -91,7 +91,7 @@ static void recv_task(void *params)
                 xQueueReceive(queue_hndl, &rxval, portMAX_DELAY);
 
 #if configUSE_TRACE_FACILITY == 1
-                arm_printf("%s @%d\n", __func__, xTaskGetTickCount());
+                basic_printf("%s @%d\n", __func__, xTaskGetTickCount());
 #endif
         }
 }

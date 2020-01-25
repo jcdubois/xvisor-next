@@ -93,15 +93,12 @@ static int __init pl011_defterm_init(struct vmm_devtree_node *node)
 		return rc;
 	}
 
-	if (vmm_devtree_getattr(node, "skip-baudrate-config"))
-		pl011_defterm_skip_baud_config = TRUE;
-	else
-		pl011_defterm_skip_baud_config = FALSE;
-
 	rc = vmm_devtree_clock_frequency(node,
 				&pl011_defterm_inclk);
 	if (rc) {
-		return rc;
+		pl011_defterm_skip_baud_config = TRUE;
+	} else {
+		pl011_defterm_skip_baud_config = FALSE;
 	}
 
 	if (vmm_devtree_read_u32(node, "baudrate",
@@ -165,7 +162,9 @@ static int __init uart8250_defterm_init(struct vmm_devtree_node *node)
 	rc = vmm_devtree_clock_frequency(node,
 				&uart8250_port.input_clock);
 	if (rc) {
-		return rc;
+		uart8250_port.skip_baudrate_config = TRUE;
+	} else {
+		uart8250_port.skip_baudrate_config = FALSE;
 	}
 
 	if (vmm_devtree_read_u32(node, "baudrate",
@@ -205,6 +204,7 @@ static struct defterm_ops uart8250_ops = {
 #include <drv/serial/omap-uart.h>
 
 static virtual_addr_t omap_defterm_base;
+static bool omap_defterm_skip_baud_config;
 static u32 omap_defterm_inclk;
 static u32 omap_defterm_baud;
 
@@ -238,7 +238,9 @@ static int __init omap_defterm_init(struct vmm_devtree_node *node)
 	rc = vmm_devtree_clock_frequency(node,
 				&omap_defterm_inclk);
 	if (rc) {
-		return rc;
+		omap_defterm_skip_baud_config = TRUE;
+	} else {
+		omap_defterm_skip_baud_config = FALSE;
 	}
 
 	if (vmm_devtree_read_u32(node, "baudrate",
@@ -247,6 +249,7 @@ static int __init omap_defterm_init(struct vmm_devtree_node *node)
 	}
 
 	omap_uart_lowlevel_init(omap_defterm_base, 2,
+				omap_defterm_skip_baud_config,
 				omap_defterm_baud,
 				omap_defterm_inclk);
 
@@ -270,6 +273,7 @@ static struct defterm_ops omapuart_ops = {
 #include <drv/serial/imx-uart.h>
 
 static virtual_addr_t imx_defterm_base;
+static bool imx_defterm_skip_baudrate_config;
 static u32 imx_defterm_inclk;
 static u32 imx_defterm_baud;
 
@@ -300,10 +304,11 @@ static int __init imx_defterm_init(struct vmm_devtree_node *node)
 		return rc;
 	}
 
-	rc = vmm_devtree_clock_frequency(node,
-				&imx_defterm_inclk);
+	rc = vmm_devtree_clock_frequency(node, &imx_defterm_inclk);
 	if (rc) {
-		return rc;
+		imx_defterm_skip_baudrate_config = TRUE;
+	} else {
+		imx_defterm_skip_baudrate_config = FALSE;
 	}
 
 	if (vmm_devtree_read_u32(node, "baudrate",
@@ -312,6 +317,7 @@ static int __init imx_defterm_init(struct vmm_devtree_node *node)
 	}
 
 	imx_lowlevel_init(imx_defterm_base,
+			  imx_defterm_skip_baudrate_config,
 			  imx_defterm_baud,
 			  imx_defterm_inclk);
 
@@ -335,6 +341,7 @@ static struct defterm_ops imx_ops = {
 #include <drv/serial/samsung-uart.h>
 
 static virtual_addr_t samsung_defterm_base;
+static bool samsung_defterm_skip_baud_config;
 static u32 samsung_defterm_inclk;
 static u32 samsung_defterm_baud;
 
@@ -370,7 +377,9 @@ static int __init samsung_defterm_init(struct vmm_devtree_node *node)
 	rc = vmm_devtree_clock_frequency(node,
 				&samsung_defterm_inclk);
 	if (rc) {
-		return rc;
+		samsung_defterm_skip_baud_config = TRUE;
+	} else {
+		samsung_defterm_skip_baud_config = FALSE;
 	}
 	
 	/* retrieve baud rate */
@@ -381,6 +390,7 @@ static int __init samsung_defterm_init(struct vmm_devtree_node *node)
 
 	/* initialize the console port */
 	samsung_lowlevel_init(samsung_defterm_base,
+			      samsung_defterm_skip_baud_config,
 			      samsung_defterm_baud,
 			      samsung_defterm_inclk);
 
@@ -404,25 +414,27 @@ static struct defterm_ops samsung_ops = {
 #include <drv/serial/scif.h>
 
 static virtual_addr_t scif_defterm_base;
+static bool scif_defterm_skip_baud_config;
 static u32 scif_defterm_inclk;
 static u32 scif_defterm_baud;
+static unsigned long scif_regtype = SCIx_SH4_SCIF_BRG_REGTYPE;
 static bool scif_defterm_use_intclk;
 
 static int scif_defterm_putc(u8 ch)
 {
-	if (!scif_lowlevel_can_putc(scif_defterm_base)) {
+	if (!scif_lowlevel_can_putc(scif_defterm_base, scif_regtype)) {
 		return VMM_EFAIL;
 	}
-	scif_lowlevel_putc(scif_defterm_base, ch);
+	scif_lowlevel_putc(scif_defterm_base, scif_regtype, ch);
 	return VMM_OK;
 }
 
 static int scif_defterm_getc(u8 *ch)
 {
-	if (!scif_lowlevel_can_getc(scif_defterm_base)) {
+	if (!scif_lowlevel_can_getc(scif_defterm_base, scif_regtype)) {
 		return VMM_EFAIL;
 	}
-	*ch = scif_lowlevel_getc(scif_defterm_base);
+	*ch = scif_lowlevel_getc(scif_defterm_base, scif_regtype);
 	return VMM_OK;
 }
 
@@ -438,7 +450,9 @@ static int __init scif_defterm_init(struct vmm_devtree_node *node)
 	rc = vmm_devtree_clock_frequency(node,
 				&scif_defterm_inclk);
 	if (rc) {
-		return rc;
+		scif_defterm_skip_baud_config = TRUE;
+	} else {
+		scif_defterm_skip_baud_config = FALSE;
 	}
 
 	if (vmm_devtree_read_u32(node, "baudrate",
@@ -453,9 +467,18 @@ static int __init scif_defterm_init(struct vmm_devtree_node *node)
 	}
 
 	scif_lowlevel_init(scif_defterm_base,
+			   scif_regtype,
+			   scif_defterm_skip_baud_config,
 			   scif_defterm_baud,
 			   scif_defterm_inclk,
 			   scif_defterm_use_intclk);
+
+	return VMM_OK;
+}
+
+static int __init scifa_defterm_init(struct vmm_devtree_node *node) {
+	scif_regtype = SCIx_SCIFA_REGTYPE;
+	scif_defterm_init(node);
 
 	return VMM_OK;
 }
@@ -466,9 +489,16 @@ static struct defterm_ops scif_ops = {
 	.init = scif_defterm_init
 };
 
+static struct defterm_ops scifa_ops = {
+	.putc = scif_defterm_putc,
+	.getc = scif_defterm_getc,
+	.init = scifa_defterm_init
+};
+
 #else
 
 #define scif_ops unknown_ops
+#define scifa_ops unknown_ops
 
 #endif
 
@@ -479,6 +509,7 @@ static struct defterm_ops scif_ops = {
 static virtual_addr_t bcm283x_mu_defterm_base;
 static u32 bcm283x_mu_defterm_inclk;
 static u32 bcm283x_mu_defterm_baud;
+static bool bcm283x_mu_defterm_skip_baud_config;
 
 static int bcm283x_mu_defterm_putc(u8 ch)
 {
@@ -510,7 +541,9 @@ static int __init bcm283x_mu_defterm_init(struct vmm_devtree_node *node)
 	rc = vmm_devtree_clock_frequency(node,
 				&bcm283x_mu_defterm_inclk);
 	if (rc) {
-		return rc;
+		bcm283x_mu_defterm_skip_baud_config = TRUE;
+	} else {
+		bcm283x_mu_defterm_skip_baud_config = FALSE;
 	}
 
 	if (vmm_devtree_read_u32(node, "baudrate",
@@ -519,6 +552,7 @@ static int __init bcm283x_mu_defterm_init(struct vmm_devtree_node *node)
 	}
 
 	bcm283x_mu_lowlevel_init(bcm283x_mu_defterm_base,
+				 bcm283x_mu_defterm_skip_baud_config,
 				 bcm283x_mu_defterm_baud,
 				 bcm283x_mu_defterm_inclk);
 
@@ -573,7 +607,9 @@ static int __init zynq_uart_defterm_init(struct vmm_devtree_node *node)
 	rc = vmm_devtree_clock_frequency(node,
 				&uart_port.input_clock);
 	if (rc) {
-		return rc;
+		uart_port.skip_baudrate_config = TRUE;
+	} else {
+		uart_port.skip_baudrate_config = FALSE;
 	}
 
 	if (vmm_devtree_read_u32(node, "baudrate",
@@ -614,6 +650,7 @@ static struct vmm_devtree_nodeid defterm_devid_table[] = {
 	{ .compatible = "exynos4210-uart", .data = &samsung_ops },
 	{ .compatible = "samsung,exynos4210-uart", .data = &samsung_ops },
 	{ .compatible = "renesas,scif", .data = &scif_ops },
+	{ .compatible = "renesas,scifa", .data = &scifa_ops },
 	{ .compatible = "brcm,bcm283x-mu", .data = &bcm283x_mu_ops },
 	{ .compatible = "cdns,uart-r1p12", .data = &zynq_uart_ops },
 	{ .compatible = "xlnx,xuartps", .data = &zynq_uart_ops },

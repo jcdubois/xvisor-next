@@ -31,7 +31,6 @@
 #ifndef __ARCH_GICV3_H__
 #define __ARCH_GICV3_H__
 
-#include <vmm_compiler.h>
 #include <vmm_host_io.h>
 #include <arch_barrier.h>
 #include <cpu_inline_asm.h>
@@ -46,6 +45,8 @@
 #define ICC_GRPEN1_EL1			sys_reg(3, 0, 12, 12, 7)
 
 #define ICC_SRE_EL2			sys_reg(3, 4, 12, 9, 5)
+
+#define ISS_SRE_EL1			ISS_SYSREG_ENC(3, 5, 0, 12, 12)
 
 /*
  * System register definitions
@@ -97,6 +98,9 @@
  * sets the GP register's most significant bits to 0 with an explicit cast.
  */
 
+#define arch_gic_read_sysreg(__sysreg)		read_sysreg(__sysreg)
+#define arch_gic_write_sysreg(__val, __sysreg)	write_sysreg(__val, __sysreg)
+
 static inline void arch_gic_write_eoir(u32 irq)
 {
 	asm volatile("msr_s " stringify(ICC_EOIR1_EL1) ", %0"
@@ -117,7 +121,7 @@ static inline u64 arch_gic_read_iar(void)
 
 	asm volatile("mrs_s %0, " stringify(ICC_IAR1_EL1)
 			: "=r" (irqstat));
-	dsb();
+	dsb(sy);
 	return irqstat;
 }
 
@@ -138,7 +142,7 @@ static inline u64 arch_gic_read_iar_cavium_thunderx(void)
 		"mrs_s %0, " stringify(ICC_IAR1_EL1) "\n\t"
 		"nop;nop;nop;nop"
 		: "=r" (irqstat));
-	dmb();
+	dmb(sy);
 
 	return irqstat;
 }
@@ -185,16 +189,6 @@ static inline void arch_gic_write_sre(u32 val)
 			: : "r" ((u64)val));
 	isb();
 }
-
-static inline unsigned long arch_gic_current_mpidr(void)
-{
-	return mrs(mpidr_el1) & 0xFF00FFFFFF;
-}
-
-#ifdef CONFIG_ARM_SMP_OPS
-#include <smp_ops.h>
-#define arch_gic_cpu_logical_map(cpu)	smp_logical_map(cpu)
-#endif
 
 static inline void arch_gic_write_irouter(u64 val, volatile void *addr)
 {

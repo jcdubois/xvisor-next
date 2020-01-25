@@ -40,6 +40,7 @@
 #include <vmm_host_irq.h>
 #include <vmm_devtree.h>
 #include <vmm_devdrv.h>
+#include <vmm_platform.h>
 #include <vmm_modules.h>
 #include <libs/bitops.h>
 #include <libs/stringlib.h>
@@ -325,7 +326,7 @@ static int mmci_request(struct mmc_host *mmc,
 	}
 }
 
-static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
+static int mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 {
 	struct mmci_host *host = mmc_priv(mmc);
 	u32 sdi_clkcr;
@@ -384,6 +385,8 @@ static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 
 	vmm_writel(sdi_clkcr, &host->base->clock);
 	vmm_udelay(CLK_CHANGE_DELAY);
+
+	return 0;
 }
 
 static int mmci_init_card(struct mmc_host *mmc, struct mmc_card *card)
@@ -410,8 +413,7 @@ static vmm_irq_return_t mmci_pio_irq_handler(int irq_no, void *dev)
 	return VMM_IRQ_HANDLED;
 }
 
-static int mmci_driver_probe(struct vmm_device *dev,
-				   const struct vmm_devtree_nodeid *devid)
+static int mmci_driver_probe(struct vmm_device *dev)
 {
 	int rc;
 	u32 sdi;
@@ -419,6 +421,13 @@ static int mmci_driver_probe(struct vmm_device *dev,
 	physical_addr_t basepa;
 	struct mmc_host *mmc;
 	struct mmci_host *host;
+	const struct vmm_devtree_nodeid *devid;
+
+	devid = vmm_platform_match_nodeid(dev);
+	if (!devid) {
+		rc = VMM_ENODEV;
+		goto free_nothing;
+	}
 
 	mmc = mmc_alloc_host(sizeof(struct mmci_host), dev);
 	if (!mmc) {
@@ -488,18 +497,21 @@ static int mmci_driver_probe(struct vmm_device *dev,
 	mmc->ops.get_cd = NULL;
 	mmc->ops.get_wp = NULL;
 
+	/* Print mmc host banner */
+	vmm_devtree_regaddr(dev->of_node, &basepa, 0);
+	vmm_linfo(dev->name,
+		  "PL%03x manf %x rev%u at 0x%08llx irq %d,%d (pio)\n",
+		  amba_part(dev), amba_manf(dev), amba_rev(dev),
+		  (unsigned long long)basepa, host->irq0, host->irq1);
+
+	/* Add mmc host */
 	rc = mmc_add_host(mmc);
 	if (rc) {
+		vmm_lerror(dev->name, "MMC add host failed (error %d)\n", rc);
 		goto free_irq1;
 	}
 
 	dev->priv = mmc;
-
-	vmm_devtree_regaddr(dev->of_node, &basepa, 0);
-	vmm_printf("%s: PL%03x manf %x rev%u at 0x%08llx irq %d,%d (pio)\n",
-		   dev->name, amba_part(dev), amba_manf(dev),
-		   amba_rev(dev), (unsigned long long)basepa,
-		   host->irq0, host->irq1);
 
 	return VMM_OK;
 
@@ -548,7 +560,7 @@ static u32 mmci_v1[]= {
 	INIT_PWR, /* pwr_init */
 	SDI_CLKCR_CLKDIV_INIT_V1 | SDI_CLKCR_CLKEN, /* clkdiv_init */
 	VOLTAGE_WINDOW_MMC, /* voltages */
-	0, /* caps */
+	MMC_CAP_MODE_4BIT, /* caps */
 	ARM_MCLK, /* clock_in */
 	ARM_MCLK / (2 * (SDI_CLKCR_CLKDIV_INIT_V1 + 1)), /* clock_min */
 	6250000, /* clock_max */

@@ -28,6 +28,7 @@
 #include <vmm_cache.h>
 #include <vmm_heap.h>
 #include <vmm_stdio.h>
+#include <vmm_host_vapool.h>
 #include <vmm_host_aspace.h>
 #include <libs/stringlib.h>
 #include <libs/buddy.h>
@@ -163,16 +164,35 @@ static int heap_print_state(struct vmm_heap_control *heap,
 }
 
 static int heap_init(struct vmm_heap_control *heap,
-		     bool is_normal, const u32 size_kb, u32 mem_flags)
+		     bool use_hugepage,
+		     bool is_normal,
+		     virtual_size_t size,
+		     u32 mem_flags)
 {
 	int rc = VMM_OK;
+	u32 hp_shift = vmm_host_hugepage_shift();
+
+	if (!size)
+		return VMM_EINVALID;
+
+	if (use_hugepage) {
+		size = roundup2_order_size(size, hp_shift);
+	} else {
+		size = roundup2_order_size(size, VMM_PAGE_SHIFT);
+	}
 
 	memset(heap, 0, sizeof(*heap));
 
-	heap->heap_size = size_kb * 1024;
-	heap->heap_start = (void *)vmm_host_alloc_pages(
+	heap->heap_size = size;
+	if (use_hugepage) {
+		heap->heap_start = (void *)vmm_host_alloc_hugepages(
+					(heap->heap_size >> hp_shift),
+					mem_flags);
+	} else {
+		heap->heap_start = (void *)vmm_host_alloc_pages(
 					VMM_SIZE_TO_PAGE(heap->heap_size),
 					mem_flags);
+	}
 	if (!heap->heap_start) {
 		return VMM_ENOMEM;
 	}
@@ -233,6 +253,33 @@ void *vmm_zalloc(virtual_size_t size)
 	}
 
 	return ret;
+}
+
+void *vmm_calloc(virtual_size_t element_count, virtual_size_t element_size)
+{
+	if (!element_count)
+		element_count = 1;
+	return vmm_zalloc(element_count * element_size);
+}
+
+char *vmm_strdup(const char *str)
+{
+	char *tstr;
+	size_t tlen;
+
+	if (!str) {
+		return NULL;
+	}
+
+	tlen = strlen(str);
+	tstr = vmm_zalloc(tlen + 1);
+	if (!tstr) {
+		return NULL;
+	}
+	strcpy(tstr, str);
+	tstr[tlen] = '\0';
+
+	return tstr;
 }
 
 virtual_size_t vmm_alloc_size(const void *ptr)
@@ -357,7 +404,7 @@ void vmm_dma_sync_for_device(virtual_addr_t start, virtual_addr_t end,
 void vmm_dma_sync_for_cpu(virtual_addr_t start, virtual_addr_t end,
 			  enum vmm_dma_direction dir)
 {
-	if (dir == DMA_FROM_DEVICE) {
+	if (dir == DMA_FROM_DEVICE || dir == DMA_BIDIRECTIONAL) {
 		/* Cache prefetching */
 		vmm_inv_dcache_range(start, end);
 		vmm_inv_outer_cache_range(start, end);
@@ -425,16 +472,16 @@ int __init vmm_heap_init(void)
 	 */
 
 	/* Create Normal heap */
-	rc = heap_init(&normal_heap, TRUE,
-			CONFIG_HEAP_SIZE_MB * 1024,
+	rc = heap_init(&normal_heap, TRUE, TRUE,
+			vmm_host_vapool_size() / CONFIG_HEAP_SIZE_FACTOR,
 			VMM_MEMORY_FLAGS_NORMAL);
 	if (rc) {
 		return rc;
 	}
 
 	/* Create DMA heap */
-	rc= heap_init(&dma_heap, FALSE,
-			CONFIG_DMA_HEAP_SIZE_KB,
+	rc= heap_init(&dma_heap, FALSE, FALSE,
+			vmm_host_vapool_size() / CONFIG_DMA_HEAP_SIZE_FACTOR,
 			VMM_MEMORY_FLAGS_DMA_NONCOHERENT);
 	if (rc) {
 		return rc;

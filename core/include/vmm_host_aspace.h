@@ -113,6 +113,12 @@ enum vmm_host_memory_flags {
 					 VMM_MEMORY_EXECUTABLE | \
 					 VMM_MEMORY_IO_DEVICE)
 
+/** Total number of enteries in memmap hash */
+u32 vmm_host_memmap_hash_total_count(void);
+
+/** Number of free enteries in memmap hash */
+u32 vmm_host_memmap_hash_free_count(void);
+
 /** Map physical memory to a virtual memory */
 virtual_addr_t vmm_host_memmap(physical_addr_t pa, 
 			       virtual_size_t sz, 
@@ -133,6 +139,18 @@ static inline int vmm_host_iounmap(virtual_addr_t va)
 {
 	return vmm_host_memunmap(va);
 }
+
+/** Get page_shift/order of hugepage */
+u32 vmm_host_hugepage_shift(void);
+
+/** Get size of hugepage */
+virtual_size_t vmm_host_hugepage_size(void);
+
+/** Allocate hugepages from host memory with default alignment */
+virtual_addr_t vmm_host_alloc_hugepages(u32 page_count, u32 mem_flags);
+
+/** Free hugepages back to host memory */
+int vmm_host_free_hugepages(virtual_addr_t page_va, u32 page_count);
 
 /** Allocate pages from host memory with particular alignment */
 virtual_addr_t vmm_host_alloc_aligned_pages(u32 page_count,

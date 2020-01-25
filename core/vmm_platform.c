@@ -28,6 +28,20 @@
 #include <vmm_msi.h>
 #include <vmm_platform.h>
 
+int __weak vmm_platform_pinctrl_bind(struct vmm_device *dev)
+{
+	/* Nothing to do here. */
+	/* The pinctrl framework will provide actual implementation */
+	return VMM_OK;
+}
+
+int __weak vmm_platform_pinctrl_init(struct vmm_device *dev)
+{
+	/* Nothing to do here. */
+	/* The pinctrl framework will provide actual implementation */
+	return VMM_OK;
+}
+
 static struct vmm_msi_domain *platform_get_msi_domain(struct vmm_device *dev,
 						struct vmm_devtree_node *np)
 {
@@ -98,7 +112,6 @@ static int platform_bus_probe(struct vmm_device *dev)
 {
 	int rc;
 	struct vmm_driver *drv;
-	const struct vmm_devtree_nodeid *match;
 
 	if (!dev || !dev->of_node || !dev->driver) {
 		return VMM_EFAIL;
@@ -109,17 +122,16 @@ static int platform_bus_probe(struct vmm_device *dev)
 		return VMM_EFAIL;
 	}
 
-	rc = vmm_devdrv_pinctrl_bind(dev);
+	rc = vmm_platform_pinctrl_bind(dev);
 	if (rc == VMM_EPROBE_DEFER) {
 		return rc;
 	}
 
-	match = vmm_devtree_match_node(drv->match_table, dev->of_node);
-	if (match) {
-		return drv->probe(dev, match);
-	}
+	rc = drv->probe(dev);
 
-	return VMM_OK;
+	vmm_platform_pinctrl_init(dev);
+
+	return rc;
 }
 
 static int platform_bus_remove(struct vmm_device *dev)
@@ -192,6 +204,18 @@ struct vmm_bus platform_bus = {
 	.probe = platform_bus_probe,
 	.remove = platform_bus_remove,
 };
+
+const struct vmm_devtree_nodeid *vmm_platform_match_nodeid(
+						struct vmm_device *dev)
+{
+	if (!dev || !dev->of_node ||
+	    !dev->driver || !dev->driver->match_table ||
+	    (dev->bus != &platform_bus)) {
+		return NULL;
+	}
+
+	return vmm_devtree_match_node(dev->driver->match_table, dev->of_node);
+}
 
 struct vmm_device *vmm_platform_find_device_by_node(
 					struct vmm_devtree_node *np)

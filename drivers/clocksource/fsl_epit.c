@@ -96,7 +96,7 @@ static u64 epit_clksrc_read(struct vmm_clocksource *cs)
 	struct epit_clocksource *ecs = cs->priv;
 
 	/*
-	 * Get the current count. As the timer is decrementing we 
+	 * Get the current count. As the timer is decrementing we
 	 * invert the result.
 	 */
 	temp = ~vmm_readl((void *)(ecs->base + EPITCNR));
@@ -160,7 +160,7 @@ static int __init epit_clocksource_init(struct vmm_devtree_node *node)
 	/*
 	 * If no clocksource is selected then we select the default
 	 * 32KHz clock
-	 * If a clock source is selected, we assume the value in the 
+	 * If a clock source is selected, we assume the value in the
 	 * device tree is he correct one.
 	 */
 	if (!(status & EPITCR_CLKSRC_REF_MASK)) {
@@ -186,6 +186,7 @@ static int __init epit_clocksource_init(struct vmm_devtree_node *node)
 	ecs->clksrc.rating = 200;
 	ecs->clksrc.read = epit_clksrc_read;
 	ecs->clksrc.mask = VMM_CLOCKSOURCE_MASK(32);
+	ecs->clksrc.freq = clock;
 	vmm_clocks_calc_mult_shift(&ecs->clksrc.mult,
 				   &ecs->clksrc.shift,
 				   clock, VMM_NSEC_PER_SEC, 10);
@@ -341,15 +342,11 @@ static vmm_irq_return_t epit_timer_interrupt(int irq, void *dev)
 	return VMM_IRQ_HANDLED;
 }
 
-static int __cpuinit epit_clockchip_init(struct vmm_devtree_node *node)
+static int __init epit_clockchip_init(struct vmm_devtree_node *node)
 {
 	int rc;
 	u32 clock, hirq, timer_num;
 	struct epit_clockchip *ecc;
-
-	if (!vmm_smp_is_bootcpu()) {
-		return VMM_OK;
-	}
 
 	/* Read clock frequency */
 	rc = vmm_devtree_clock_frequency(node, &clock);
@@ -402,6 +399,7 @@ static int __cpuinit epit_clockchip_init(struct vmm_devtree_node *node)
 	ecc->clkchip.cpumask = cpu_all_mask;
 #endif
 	ecc->clkchip.features = VMM_CLOCKCHIP_FEAT_ONESHOT;
+	ecc->clkchip.freq = clock;
 	vmm_clocks_calc_mult_shift(&ecc->clkchip.mult,
 				   &ecc->clkchip.shift,
 				   VMM_NSEC_PER_SEC, clock, 10);

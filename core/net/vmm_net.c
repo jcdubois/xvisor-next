@@ -24,10 +24,9 @@
 #include <vmm_types.h>
 #include <vmm_error.h>
 #include <vmm_modules.h>
-#include <vmm_platform.h>
-#include <vmm_devtree.h>
 #include <vmm_stdio.h>
 #include <net/vmm_net.h>
+#include <net/vmm_netswitch.h>
 
 #define MODULE_DESC			"Network Framework"
 #define MODULE_AUTHOR			"Sukanto Ghosh"
@@ -39,7 +38,6 @@
 static int __init vmm_net_init(void)
 {
 	int rc = VMM_OK;
-	struct vmm_devtree_node *node;
 
 	rc = vmm_mbufpool_init();
 	if (rc) {
@@ -62,7 +60,7 @@ static int __init vmm_net_init(void)
 	rc = vmm_hub_init();
 	if (rc) {
 		vmm_printf("%s: Failed to init hub\n", __func__);
-		goto bridge_init_failed;
+		goto hub_init_failed;
 	}
 
 	rc = vmm_bridge_init();
@@ -71,26 +69,23 @@ static int __init vmm_net_init(void)
 		goto bridge_init_failed;
 	}
 
-	node = vmm_devtree_getnode(VMM_DEVTREE_PATH_SEPARATOR_STRING
-				   VMM_DEVTREE_VMMINFO_NODE_NAME
-				   VMM_DEVTREE_PATH_SEPARATOR_STRING "net");
-	if (!node) {
-		vmm_printf("%s: devtree node not found\n", __func__);
-		goto net_devtree_probe_failed;
-	}
-
-	rc = vmm_platform_probe(node);
-	vmm_devtree_dref_node(node);
+#ifdef CONFIG_NET_AUTOCREATE_BRIDGE
+	rc = vmm_netswitch_policy_create_switch("bridge",
+				CONFIG_NET_AUTOCREATE_BRIDGE_NAME, 0, NULL);
 	if (rc) {
-		vmm_printf("%s: devtree node probe failed\n", __func__);
-		goto net_devtree_probe_failed;
+		goto net_autocreate_failed;
 	}
+#endif
 
 	goto net_init_done;
 
-net_devtree_probe_failed:
+#ifdef CONFIG_NET_AUTOCREATE_BRIDGE
+net_autocreate_failed:
 	vmm_bridge_exit();
+#endif
 bridge_init_failed:
+	vmm_hub_exit();
+hub_init_failed:
 	vmm_netport_exit();
 netport_init_failed:
 	vmm_netswitch_exit();

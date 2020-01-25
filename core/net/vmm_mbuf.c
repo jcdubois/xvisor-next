@@ -175,7 +175,7 @@ int __init vmm_mbufpool_init(void)
 	b_count = CONFIG_NET_MBUF_POOL_SIZE;
 	mbpctrl.mpool = mempool_ram_create(b_size,
 					VMM_SIZE_TO_PAGE(b_size * b_count),
-					VMM_MEMORY_FLAGS_NORMAL);
+					VMM_PAGEPOOL_NORMAL);
 	if (!mbpctrl.mpool) {
 		return VMM_ENOMEM;
 	}
@@ -189,7 +189,7 @@ int __init vmm_mbufpool_init(void)
 			mbpctrl.epool_slabs[slab] = 
 				mempool_ram_create(b_size,
 					VMM_SIZE_TO_PAGE(b_size * b_count),
-					VMM_MEMORY_FLAGS_NORMAL);
+					VMM_PAGEPOOL_NORMAL);
 		} else {
 			mbpctrl.epool_slabs[slab] = NULL;
 		}
@@ -282,6 +282,7 @@ struct vmm_mbuf *m_get(int nowait, int flags)
 	}
 
 	INIT_LIST_HEAD(&m->m_list);
+	m->m_list_priv = NULL;
 	m->m_next = NULL;
 	m->m_data = NULL;
 	m->m_len = 0;

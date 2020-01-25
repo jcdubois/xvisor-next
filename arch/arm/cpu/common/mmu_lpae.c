@@ -56,6 +56,7 @@ struct mmu_lpae_ctrl {
 	/* Initialized by memory read/write init */
 	struct cpu_ttbl *mem_rw_ttbl[CONFIG_CPU_COUNT];
 	u64 *mem_rw_tte[CONFIG_CPU_COUNT];
+	physical_addr_t mem_rw_outaddr_mask[CONFIG_CPU_COUNT];
 };
 
 static struct mmu_lpae_ctrl mmuctrl;
@@ -253,6 +254,7 @@ struct cpu_ttbl *mmu_lpae_ttbl_alloc(int stage)
 	ttbl->tte_cnt = 0;
 	ttbl->child_cnt = 0;
 	INIT_LIST_HEAD(&ttbl->child_list);
+	memset((void *)ttbl->tbl_va, 0, TTBL_TABLE_SIZE);
 
 	return ttbl;
 }
@@ -287,7 +289,6 @@ int mmu_lpae_ttbl_free(struct cpu_ttbl *ttbl)
 
 	vmm_spin_lock_irqsave_lite(&ttbl->tbl_lock, flags);
 	ttbl->tte_cnt = 0;
-	memset((void *)ttbl->tbl_va, 0, TTBL_TABLE_SIZE);
 	vmm_spin_unlock_irqrestore_lite(&ttbl->tbl_lock, flags);
 
 	ttbl->level = TTBL_FIRST_LEVEL;
@@ -683,8 +684,9 @@ int arch_cpu_aspace_memory_read(virtual_addr_t tmp_va,
 				void *dst, u32 len, bool cacheable)
 {
 	u64 old_tte_val;
-	u64 *tte = mmuctrl.mem_rw_tte[vmm_smp_processor_id()];
-	struct cpu_ttbl *ttbl = mmuctrl.mem_rw_ttbl[vmm_smp_processor_id()];
+	u32 cpu = vmm_smp_processor_id();
+	u64 *tte = mmuctrl.mem_rw_tte[cpu];
+	physical_addr_t outaddr_mask = mmuctrl.mem_rw_outaddr_mask[cpu];
 	virtual_addr_t offset = (src & VMM_PAGE_MASK);
 
 	old_tte_val = *tte;
@@ -694,8 +696,7 @@ int arch_cpu_aspace_memory_read(virtual_addr_t tmp_va,
 	} else {
 		*tte = PHYS_RW_TTE_NOCACHE;
 	}
-	*tte |= src &
-		(mmu_lpae_level_map_mask(ttbl->level) & TTBL_OUTADDR_MASK);
+	*tte |= src & outaddr_mask;
 
 	cpu_mmu_sync_tte(tte);
 	cpu_invalid_va_hypervisor_tlb(tmp_va);
@@ -729,8 +730,9 @@ int arch_cpu_aspace_memory_write(virtual_addr_t tmp_va,
 				 void *src, u32 len, bool cacheable)
 {
 	u64 old_tte_val;
-	u64 *tte = mmuctrl.mem_rw_tte[vmm_smp_processor_id()];
-	struct cpu_ttbl *ttbl = mmuctrl.mem_rw_ttbl[vmm_smp_processor_id()];
+	u32 cpu = vmm_smp_processor_id();
+	u64 *tte = mmuctrl.mem_rw_tte[cpu];
+	physical_addr_t outaddr_mask = mmuctrl.mem_rw_outaddr_mask[cpu];
 	virtual_addr_t offset = (dst & VMM_PAGE_MASK);
 
 	old_tte_val = *tte;
@@ -740,8 +742,7 @@ int arch_cpu_aspace_memory_write(virtual_addr_t tmp_va,
 	} else {
 		*tte = PHYS_RW_TTE_NOCACHE;
 	}
-	*tte |= dst &
-		(mmu_lpae_level_map_mask(ttbl->level) & TTBL_OUTADDR_MASK);
+	*tte |= dst & outaddr_mask;
 
 	cpu_mmu_sync_tte(tte);
 	cpu_invalid_va_hypervisor_tlb(tmp_va);
@@ -846,20 +847,33 @@ int __cpuinit arch_cpu_aspace_memory_rwinit(virtual_addr_t tmp_va)
 	if (rc) {
 		return rc;
 	}
+	mmuctrl.mem_rw_outaddr_mask[cpu] =
+		(mmu_lpae_level_map_mask(mmuctrl.mem_rw_ttbl[cpu]->level) &
+		 TTBL_OUTADDR_MASK);
 
 	return VMM_OK;
 }
 
+u32 arch_cpu_aspace_hugepage_log2size(void)
+{
+	return TTBL_L2_BLOCK_SHIFT;
+}
+
 int arch_cpu_aspace_map(virtual_addr_t page_va,
+			virtual_size_t page_sz,
 			physical_addr_t page_pa,
 			u32 mem_flags)
 {
 	struct cpu_page p;
 
+	if (page_sz != TTBL_L3_BLOCK_SIZE &&
+	    page_sz != TTBL_L2_BLOCK_SIZE)
+		return VMM_EINVALID;
+
 	memset(&p, 0, sizeof(p));
 	p.ia = page_va;
 	p.oa = page_pa;
-	p.sz = VMM_PAGE_SIZE;
+	p.sz = page_sz;
 	p.af = 1;
 	if (mem_flags & VMM_MEMORY_WRITEABLE) {
 		p.ap = TTBL_AP_SRW_U;
@@ -927,22 +941,19 @@ int __init arch_cpu_aspace_primary_init(physical_addr_t *core_resv_pa,
 					virtual_size_t *arch_resv_sz)
 {
 	int i, t, rc = VMM_EFAIL;
-	virtual_addr_t va, resv_va = *core_resv_va;
-	virtual_size_t sz, resv_sz = *core_resv_sz;
-	physical_addr_t pa, resv_pa = *core_resv_pa;
+	virtual_addr_t va, resv_va;
+	virtual_size_t sz, resv_sz;
+	physical_addr_t pa, resv_pa;
 	struct cpu_page hyppg;
 	struct cpu_ttbl *ttbl, *parent;
 
-	/* Check & setup core reserved space and update the
-	 * core_resv_pa, core_resv_va, and core_resv_sz parameters
-	 * to inform host aspace about correct placement of the
-	 * core reserved space.
-	 */
+	/* Initial values of resv_va, resv_pa, and resv_sz */
 	pa = arch_code_paddr_start();
 	va = arch_code_vaddr_start();
 	sz = arch_code_size();
 	resv_va = va + sz;
 	resv_pa = pa + sz;
+	resv_sz = 0;
 	if (resv_va & (TTBL_L3_BLOCK_SIZE - 1)) {
 		resv_va += TTBL_L3_BLOCK_SIZE -
 			    (resv_va & (TTBL_L3_BLOCK_SIZE - 1));
@@ -951,13 +962,6 @@ int __init arch_cpu_aspace_primary_init(physical_addr_t *core_resv_pa,
 		resv_pa += TTBL_L3_BLOCK_SIZE -
 			    (resv_pa & (TTBL_L3_BLOCK_SIZE - 1));
 	}
-	if (resv_sz & (TTBL_L3_BLOCK_SIZE - 1)) {
-		resv_sz += TTBL_L3_BLOCK_SIZE -
-			    (resv_sz & (TTBL_L3_BLOCK_SIZE - 1));
-	}
-	*core_resv_pa = resv_pa;
-	*core_resv_va = resv_va;
-	*core_resv_sz = resv_sz;
 
 	/* Initialize MMU control and allocate arch reserved space and
 	 * update the *arch_resv_pa, *arch_resv_va, and *arch_resv_sz
@@ -970,6 +974,10 @@ int __init arch_cpu_aspace_primary_init(physical_addr_t *core_resv_pa,
 	mmuctrl.ttbl_base_va = resv_va + resv_sz;
 	mmuctrl.ttbl_base_pa = resv_pa + resv_sz;
 	resv_sz += TTBL_TABLE_SIZE * TTBL_MAX_TABLE_COUNT;
+	if (resv_sz & (TTBL_L3_BLOCK_SIZE - 1)) {
+		resv_sz += TTBL_L3_BLOCK_SIZE -
+			    (resv_sz & (TTBL_L3_BLOCK_SIZE - 1));
+	}
 	*arch_resv_sz = resv_sz - *arch_resv_sz;
 	mmuctrl.ittbl_base_va = (virtual_addr_t)&def_ttbl;
 	mmuctrl.ittbl_base_pa = mmuctrl.ittbl_base_va -
@@ -1067,6 +1075,20 @@ int __init arch_cpu_aspace_primary_init(physical_addr_t *core_resv_pa,
 		/* Update MMU control */
 		mmuctrl.ttbl_alloc_count++;
 	}
+
+
+	/* Check & setup core reserved space and update the
+	 * core_resv_pa, core_resv_va, and core_resv_sz parameters
+	 * to inform host aspace about correct placement of the
+	 * core reserved space.
+	 */
+	*core_resv_pa = resv_pa + resv_sz;
+	*core_resv_va = resv_va + resv_sz;
+	if (*core_resv_sz & (TTBL_L3_BLOCK_SIZE - 1)) {
+		*core_resv_sz += TTBL_L3_BLOCK_SIZE -
+			    (resv_sz & (TTBL_L3_BLOCK_SIZE - 1));
+	}
+	resv_sz += *core_resv_sz;
 
 	/* TODO: Unmap identity mappings from hypervisor ttbl
 	 *

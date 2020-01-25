@@ -47,8 +47,7 @@
 
 static inline void cpu_mmu_sync_tte(u64 *tte)
 {
-	dsb();
-	isb();
+	dsb(ishst);
 }
 
 static inline void cpu_mmu_clean_invalidate(void *va)

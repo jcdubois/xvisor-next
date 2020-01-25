@@ -6,12 +6,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
@@ -31,6 +31,7 @@
 #include <cpu_inline_asm.h>
 #include <cpu_vcpu_sysregs.h>
 #include <cpu_vcpu_vfp.h>
+#include <cpu_vcpu_ptrauth.h>
 #include <cpu_vcpu_helper.h>
 
 #include <generic_timer.h>
@@ -361,7 +362,8 @@ int arch_vcpu_init(struct vmm_vcpu *vcpu)
 	/* For both Orphan & Normal VCPUs */
 	memset(arm_regs(vcpu), 0, sizeof(arch_regs_t));
 	arm_regs(vcpu)->pc = vcpu->start_pc;
-	arm_regs(vcpu)->sp = vcpu->stack_va + vcpu->stack_sz - 8;
+	arm_regs(vcpu)->sp = vcpu->stack_va +
+			     (vcpu->stack_sz - ARCH_CACHE_LINE_SIZE);
 	arm_regs(vcpu)->sp = arm_regs(vcpu)->sp & ~0x7;
 	if (!vcpu->is_normal) {
 		arm_regs(vcpu)->pstate = PSR_MODE64_EL2h;
@@ -498,6 +500,7 @@ int arch_vcpu_init(struct vmm_vcpu *vcpu)
 			arm_set_feature(vcpu, ARM_FEATURE_DUMMY_C15_REGS);
 			arm_set_feature(vcpu, ARM_FEATURE_LPAE);
 			arm_set_feature(vcpu, ARM_FEATURE_TRUSTZONE);
+			arm_set_feature(vcpu, ARM_FEATURE_PTRAUTH);
 			break;
 		case ARM_CPUID_ARMV8:
 			arm_set_feature(vcpu, ARM_FEATURE_V8);
@@ -507,6 +510,7 @@ int arch_vcpu_init(struct vmm_vcpu *vcpu)
 			arm_set_feature(vcpu, ARM_FEATURE_ARM_DIV);
 			arm_set_feature(vcpu, ARM_FEATURE_LPAE);
 			arm_set_feature(vcpu, ARM_FEATURE_GENERIC_TIMER);
+			arm_set_feature(vcpu, ARM_FEATURE_PTRAUTH);
 			break;
 		default:
 			break;
@@ -558,6 +562,7 @@ int arch_vcpu_init(struct vmm_vcpu *vcpu)
 					HCR_TSC_MASK |
 					HCR_TWE_MASK |
 					HCR_TWI_MASK |
+					HCR_FB_MASK  |
 					HCR_AMO_MASK |
 					HCR_IMO_MASK |
 					HCR_FMO_MASK |
@@ -597,6 +602,12 @@ int arch_vcpu_init(struct vmm_vcpu *vcpu)
 		goto fail_vfp_init;
 	}
 
+	/* Initialize PTRAUTH context */
+	rc = cpu_vcpu_ptrauth_init(vcpu);
+	if (rc) {
+		goto fail_ptrauth_init;
+	}
+
 	/* Initialize generic timer context */
 	if (arm_feature(vcpu, ARM_FEATURE_GENERIC_TIMER)) {
 		if (vmm_devtree_read_u32(vcpu->node,
@@ -622,6 +633,10 @@ int arch_vcpu_init(struct vmm_vcpu *vcpu)
 	goto done;
 
 fail_gentimer_init:
+	if (!vcpu->reset_count) {
+		cpu_vcpu_ptrauth_deinit(vcpu);
+	}
+fail_ptrauth_init:
 	if (!vcpu->reset_count) {
 		cpu_vcpu_vfp_deinit(vcpu);
 	}
@@ -672,6 +687,12 @@ int arch_vcpu_deinit(struct vmm_vcpu *vcpu)
 		}
 	}
 
+	/* Free PTRAUTH context */
+	rc = cpu_vcpu_ptrauth_deinit(vcpu);
+	if (rc) {
+		goto done;
+	}
+
 	/* Free VFP context */
 	rc = cpu_vcpu_vfp_deinit(vcpu);
 	if (rc) {
@@ -693,7 +714,7 @@ int arch_vcpu_deinit(struct vmm_vcpu *vcpu)
 done:
 	msr(cptr_el2, saved_cptr_el2);
 	msr(hstr_el2, saved_hstr_el2);
-	return VMM_OK;
+	return rc;
 }
 
 void arch_vcpu_switch(struct vmm_vcpu *tvcpu,
@@ -726,6 +747,8 @@ void arch_vcpu_switch(struct vmm_vcpu *tvcpu,
 			cpu_vcpu_sysregs_save(tvcpu);
 			/* Save VFP and SIMD context */
 			cpu_vcpu_vfp_save(tvcpu);
+			/* Save PTRAUTH context */
+			cpu_vcpu_ptrauth_save(tvcpu);
 			/* Save generic timer */
 			if (arm_feature(tvcpu, ARM_FEATURE_GENERIC_TIMER)) {
 				generic_timer_vcpu_context_save(tvcpu,
@@ -747,6 +770,8 @@ void arch_vcpu_switch(struct vmm_vcpu *tvcpu,
 			generic_timer_vcpu_context_restore(vcpu,
 						arm_gentimer_context(vcpu));
 		}
+		/* Restore PTRAUTH context */
+		cpu_vcpu_ptrauth_restore(vcpu);
 		/* Restore VFP and SIMD context */
 		cpu_vcpu_vfp_restore(vcpu);
 		/* Restore sysregs context */
@@ -770,7 +795,7 @@ void arch_vcpu_switch(struct vmm_vcpu *tvcpu,
 			 */
 			inv_tlb_guest_allis();
 			/* Ensure changes are visible */
-			dsb();
+			dsb(sy);
 			isb();
 		}
 	}
@@ -855,6 +880,9 @@ void arch_vcpu_regs_dump(struct vmm_chardev *cdev, struct vmm_vcpu *vcpu)
 
 	/* Print VFP context */
 	cpu_vcpu_vfp_dump(cdev, vcpu);
+
+	/* Print PTRAUTH context */
+	cpu_vcpu_ptrauth_dump(cdev, vcpu);
 
 	/* Print sysregs context */
 	cpu_vcpu_sysregs_dump(cdev, vcpu);

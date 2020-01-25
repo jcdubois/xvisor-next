@@ -26,14 +26,20 @@
 #include <vmm_heap.h>
 #include <vmm_modules.h>
 #include <vmm_devemu.h>
-#include <emu/virtio.h>
-#include <emu/virtio_queue.h>
-#include <emu/virtio_pci.h>
+#include <vio/vmm_virtio.h>
+#include <vio/vmm_virtio_pci.h>
 #include <emu/pci/pci_emu_core.h>
 
+#define VIRTIO_MAX_DEV_ID			10
+#define VIRTIO_MIN_DEV_ID			1
+
+#define VIRTIO_PCI_VENDOR_ID		0x1af4
+#define VIRTIO_PCI_DEVICE_ID_BASE	0x1000
+
+#define GET_VIRTIO_PCI_DEVICE_ID(did)	(VIRTIO_PCI_DEVICE_ID_BASE + did)
 
 #define VIRTIO_PCI_EMU_IPRIORITY	(PCI_EMU_CORE_IPRIORITY +	\
-					 VIRTIO_IPRIORITY + 1)
+					 VMM_VIRTIO_IPRIORITY + 1)
 
 #define MODULE_DESC			"Virtio PCI Transport Layer"
 #define MODULE_AUTHOR			"Himanshu Chauhan"
@@ -42,11 +48,18 @@
 #define	MODULE_INIT			virtio_pci_emulator_init
 #define	MODULE_EXIT			virtio_pci_emulator_exit
 
-static int virtio_pci_notify(struct virtio_device *dev, u32 vq)
+struct virtio_pci_dev {
+	struct vmm_guest *guest;
+	struct vmm_virtio_device dev;
+	struct vmm_virtio_pci_config config;
+	u32 irq;
+};
+
+static int virtio_pci_notify(struct vmm_virtio_device *dev, u32 vq)
 {
 	struct virtio_pci_dev *m = dev->tra_data;
 
-	m->config.interrupt_state |= VIRTIO_PCI_INT_VRING;
+	m->config.interrupt_state |= VMM_VIRTIO_PCI_INT_VRING;
 
 	vmm_devemu_emulate_irq(m->guest, m->irq, 1);
 
@@ -54,34 +67,35 @@ static int virtio_pci_notify(struct virtio_device *dev, u32 vq)
 }
 
 int virtio_pci_config_read(struct virtio_pci_dev *m,
-			   u32 offset, void *dst,
-			   u32 dst_len)
+			   u32 offset, void *dst, u32 dst_len)
 {
 	int rc = VMM_OK;
 
 	switch (offset) {
-	case VIRTIO_PCI_HOST_FEATURES:
-		*(u32 *)dst = m->dev.emu->get_host_features(&m->dev);
+	case VMM_VIRTIO_PCI_HOST_FEATURES:
+		*(u32 *)dst = (u32)m->dev.emu->get_host_features(&m->dev);
 		break;
-	case VIRTIO_PCI_QUEUE_PFN:
+	case VMM_VIRTIO_PCI_QUEUE_PFN:
 		*(u32 *)dst = m->dev.emu->get_pfn_vq(&m->dev,
 						     m->config.queue_sel);
 		break;
-	case VIRTIO_PCI_QUEUE_NUM:
+	case VMM_VIRTIO_PCI_QUEUE_NUM:
 		*(u32 *)dst = m->dev.emu->get_size_vq(&m->dev,
 					      m->config.queue_sel);
 		break;
-	case VIRTIO_PCI_STATUS:
-		*(u32 *)dst = (*(u32 *)(((void *)&m->config) + offset));
+	case VMM_VIRTIO_PCI_STATUS:
+		*(u32 *)dst = m->config.status;
 		break;
-	case VIRTIO_PCI_ISR:
+	case VMM_VIRTIO_PCI_ISR:
 		/* reading from the ISR also clears it. */
 		*(u32 *)dst = m->config.interrupt_state;
 		m->config.interrupt_state = 0;
 		vmm_devemu_emulate_irq(m->guest, m->irq, 0);
 		break;
 	default:
-		rc = VMM_EFAIL;
+		vmm_printf("%s: guest=%s invalid offset=0x%x\n",
+			   __func__, m->guest->name, offset);
+		rc = VMM_EINVALID;
 		break;
 	}
 
@@ -89,52 +103,55 @@ int virtio_pci_config_read(struct virtio_pci_dev *m,
 }
 
 static int virtio_pci_read(struct virtio_pci_dev *m,
-			   u32 offset, u32 *dst)
+			   u32 offset, u32 *dst, u32 dst_len)
 {
 	/* Device specific config write */
-	if (offset >= VIRTIO_PCI_CONFIG) {
-		offset -= VIRTIO_PCI_CONFIG;
-		return virtio_config_read(&m->dev, offset, dst, 4);
+	if (offset >= VMM_VIRTIO_PCI_CONFIG) {
+		offset -= VMM_VIRTIO_PCI_CONFIG;
+		return vmm_virtio_config_read(&m->dev, offset, dst, dst_len);
 	}
 
-	return virtio_pci_config_read(m, offset, dst, 4);
+	return virtio_pci_config_read(m, offset, dst, dst_len);
 }
 
 static int virtio_pci_config_write(struct virtio_pci_dev *m,
-				   physical_addr_t offset,
-				   void *src, u32 src_len)
+				   u32 offset, void *src, u32 src_len)
 {
 	int rc = VMM_OK;
 	u32 val = *(u32 *)(src);
 
 	switch (offset) {
-	case VIRTIO_PCI_GUEST_FEATURES:
-		m->dev.emu->set_guest_features(&m->dev, val);
+	case VMM_VIRTIO_PCI_GUEST_FEATURES:
+		m->dev.emu->set_guest_features(&m->dev, 0, val);
 		break;
-	case VIRTIO_PCI_QUEUE_PFN:
+	case VMM_VIRTIO_PCI_QUEUE_PFN:
 		m->dev.emu->init_vq(&m->dev,
 				    m->config.queue_sel,
-				    VIRTIO_PCI_PAGE_SIZE,
-				    VIRTIO_PCI_PAGE_SIZE,
+				    VMM_VIRTIO_PCI_PAGE_SIZE,
+				    VMM_VIRTIO_PCI_PAGE_SIZE,
 				    val);
 		break;
-	case VIRTIO_PCI_QUEUE_SEL:
-		if (val < VIRTIO_PCI_QUEUE_MAX)
-			*(u32 *)(((void *)&m->config) + offset) = val;
+	case VMM_VIRTIO_PCI_QUEUE_SEL:
+		if (val < VMM_VIRTIO_PCI_QUEUE_MAX) {
+			m->config.queue_sel = (u16)val;
+		}
 		break;
-	case VIRTIO_PCI_QUEUE_NOTIFY:
-		if (val < VIRTIO_PCI_QUEUE_MAX) {
+	case VMM_VIRTIO_PCI_QUEUE_NOTIFY:
+		if (val < VMM_VIRTIO_PCI_QUEUE_MAX) {
 			m->dev.emu->notify_vq(&m->dev, val);
 		}
 		break;
-	case VIRTIO_PCI_STATUS:
-		*(u32 *)(((void *)&m->config) + offset) = val;
+	case VMM_VIRTIO_PCI_STATUS:
+		if ((u8)val != m->config.status) {
+			m->dev.emu->status_changed(&m->dev, val);
+		}
+		m->config.status = (u8)val;
 		break;
 
 	default:
-		vmm_printf("%s: unexpected address 0x%"PRIPADDR" value 0x%x",
-			   __func__, offset, val);
-		rc = VMM_EFAIL;
+		vmm_printf("%s: guest=%s invalid offset=0x%x\n",
+			   __func__, m->guest->name, offset);
+		rc = VMM_EINVALID;
 		break;
 	}
 
@@ -142,20 +159,20 @@ static int virtio_pci_config_write(struct virtio_pci_dev *m,
 }
 
 static int virtio_pci_write(struct virtio_pci_dev *m,
-			    u32 offset, u32 src_mask, u32 src)
+			    u32 offset, u32 src_mask, u32 src, u32 src_len)
 {
 	src = src & ~src_mask;
 
 	/* Device specific config write */
-	if (offset >= VIRTIO_PCI_CONFIG) {
-		offset -= VIRTIO_PCI_CONFIG;
-		return virtio_config_write(&m->dev, (u32)offset, &src, 4);
+	if (offset >= VMM_VIRTIO_PCI_CONFIG) {
+		offset -= VMM_VIRTIO_PCI_CONFIG;
+		return vmm_virtio_config_write(&m->dev, offset, &src, src_len);
 	}
 
-	return virtio_pci_config_write(m, (u32)offset, &src, 4);
+	return virtio_pci_config_write(m, offset, &src, src_len);
 }
 
-static struct virtio_transport pci_tra = {
+static struct vmm_virtio_transport pci_tra = {
 	.name = "virtio_pci",
 	.notify = virtio_pci_notify,
 };
@@ -169,12 +186,18 @@ static int virtio_pci_emulator_probe(struct pci_device *pdev,
 				     struct vmm_guest *guest,
 				     const struct vmm_devtree_nodeid *eid)
 {
-	struct pci_class *class = (struct pci_class *)pdev;
+	struct pci_class *class = PCI_DEVICE_TO_CLASS(pdev);
+
+	/* sanitize device ID */
+	if((pdev->device_id > VIRTIO_MAX_DEV_ID) ||
+				(pdev->device_id < VIRTIO_MIN_DEV_ID)) {
+		return VMM_EFAIL;
+	}
 
 	/* Virtio device */
-	class->conf_header.vendor_id = 0x1af4;
+	class->conf_header.vendor_id = VIRTIO_PCI_VENDOR_ID;
 	/* Block Device */
-	class->conf_header.device_id = 0x1001;
+	class->conf_header.device_id = GET_VIRTIO_PCI_DEVICE_ID(pdev->device_id);
 
 	pdev->priv = NULL;
 
@@ -193,7 +216,7 @@ static int virtio_pci_bar_read8(struct vmm_emudev *edev,
 	int rc;
 	u32 regval = 0x0;
 
-	rc = virtio_pci_read(edev->priv, offset, &regval);
+	rc = virtio_pci_read(edev->priv, offset, &regval, 1);
 	if (!rc) {
 		*dst = regval & 0xFF;
 	}
@@ -208,7 +231,7 @@ static int virtio_pci_bar_read16(struct vmm_emudev *edev,
 	int rc;
 	u32 regval = 0x0;
 
-	rc = virtio_pci_read(edev->priv, offset, &regval);
+	rc = virtio_pci_read(edev->priv, offset, &regval, 2);
 	if (!rc) {
 		*dst = regval & 0xFFFF;
 	}
@@ -220,38 +243,40 @@ static int virtio_pci_bar_read32(struct vmm_emudev *edev,
 				 physical_addr_t offset,
 				 u32 *dst)
 {
-	return virtio_pci_read(edev->priv, offset, dst);
+	return virtio_pci_read(edev->priv, offset, dst, 4);
 }
 
 static int virtio_pci_bar_write8(struct vmm_emudev *edev,
 				 physical_addr_t offset,
 				 u8 src)
 {
-	return virtio_pci_write(edev->priv, offset, 0xFFFFFF00, src);
+	return virtio_pci_write(edev->priv, offset, 0xFFFFFF00, src, 1);
 }
 
 static int virtio_pci_bar_write16(struct vmm_emudev *edev,
 				  physical_addr_t offset,
 				  u16 src)
 {
-	return virtio_pci_write(edev->priv, offset, 0xFFFF0000, src);
+	return virtio_pci_write(edev->priv, offset, 0xFFFF0000, src, 2);
 }
 
 static int virtio_pci_bar_write32(struct vmm_emudev *edev,
 				  physical_addr_t offset,
 				  u32 src)
 {
-	return virtio_pci_write(edev->priv, offset, 0x00000000, src);
+	return virtio_pci_write(edev->priv, offset, 0x00000000, src, 4);
 }
 
 static int virtio_pci_bar_reset(struct vmm_emudev *edev)
 {
 	struct virtio_pci_dev *m = edev->priv;
 
+	m->config.queue_sel = 0x0;
 	m->config.interrupt_state = 0x0;
+	m->config.status = 0x0;
 	vmm_devemu_emulate_irq(m->guest, m->irq, 0);
 
-	return virtio_reset(&m->dev);
+	return vmm_virtio_reset(&m->dev);
 }
 
 static int virtio_pci_bar_remove(struct vmm_emudev *edev)
@@ -259,7 +284,7 @@ static int virtio_pci_bar_remove(struct vmm_emudev *edev)
 	struct virtio_pci_dev *vdev = edev->priv;
 
 	if (vdev) {
-		virtio_unregister_device((struct virtio_device *)&vdev->dev);
+		vmm_virtio_unregister_device(&vdev->dev);
 		vmm_free(vdev);
 		edev->priv = NULL;
 	}
@@ -282,14 +307,14 @@ static int virtio_pci_bar_probe(struct vmm_guest *guest,
 
 	vdev->guest = guest;
 
-	vmm_snprintf(vdev->dev.name, VIRTIO_DEVICE_MAX_NAME_LEN,
+	vmm_snprintf(vdev->dev.name, VMM_VIRTIO_DEVICE_MAX_NAME_LEN,
 		     "%s/%s", guest->name, edev->node->name);
 	vdev->dev.edev = edev;
 	vdev->dev.tra = &pci_tra;
 	vdev->dev.tra_data = vdev;
 	vdev->dev.guest = guest;
 
-	vdev->config = (struct virtio_pci_config) {
+	vdev->config = (struct vmm_virtio_pci_config) {
 		.queue_num  = 256,
 	};
 
@@ -299,12 +324,14 @@ static int virtio_pci_bar_probe(struct vmm_guest *guest,
 		goto virtio_pci_probe_freestate_fail;
 	}
 
-	rc = vmm_devtree_irq_get(edev->node, &vdev->irq, 0);
+	rc = vmm_devtree_read_u32_atindex(edev->node,
+					  VMM_DEVTREE_INTERRUPTS_ATTR_NAME,
+					  &vdev->irq, 0);
 	if (rc) {
 		goto virtio_pci_probe_freestate_fail;
 	}
 
-	if ((rc = virtio_register_device(&vdev->dev))) {
+	if ((rc = vmm_virtio_register_device(&vdev->dev))) {
 		goto virtio_pci_probe_freestate_fail;
 	}
 

@@ -43,7 +43,6 @@
 #include <linux/interrupt.h>
 #include <linux/rtc.h>
 #include <linux/bcd.h>
-#include <linux/clk.h>
 #include <linux/slab.h>
 #include <linux/io.h>
 #include <linux/spinlock.h>
@@ -85,7 +84,7 @@ static DEFINE_SPINLOCK(s3c_rtc_pie_lock);
  * This is a temporary solution until we have a clock management
  * API
  */
-int clk_enable(struct clk *clk)
+static int clk_enable(struct clk *clk)
 {
 	u32 perir_reg = vmm_readl((void *)clk);
 
@@ -102,7 +101,7 @@ int clk_enable(struct clk *clk)
  * This is a temporary solution until we have a clock management
  * API
  */
-void clk_disable(struct clk *clk)
+static void clk_disable(struct clk *clk)
 {
 	u32 perir_reg = vmm_readl((void *)clk);
 
@@ -117,7 +116,7 @@ void clk_disable(struct clk *clk)
  * This is a temporary solution until we have a clock management
  * API
  */
-void clk_put(struct clk *clk)
+static void clk_put(struct clk *clk)
 {
 	vmm_host_iounmap((virtual_addr_t)clk);
 }
@@ -126,7 +125,7 @@ void clk_put(struct clk *clk)
  * This is a temporary solution until we have a clock management
  * API
  */
-struct clk *clk_get(struct vmm_device *dev, const char *name)
+static struct clk *clk_get(struct vmm_device *dev, const char *name)
 {
 	void *cmu_ptr = (void *)vmm_host_iomap(EXYNOS4_PA_CMU +
 					       EXYNOS4_CLKGATE_IP_PERIR,
@@ -411,11 +410,10 @@ static int s3c_rtc_setalarm(struct rtc_device *dev, struct rtc_wkalrm *alrm)
 	return 0;
 }
 
-static struct rtc_device s3c_rtcops = {
-	.name = "s3c-rtc",
-	.get_time = s3c_rtc_gettime,
+static struct rtc_class_ops s3c_rtc_ops = {
+	.read_time = s3c_rtc_gettime,
 	.set_time = s3c_rtc_settime,
-	.get_alarm = s3c_rtc_getalarm,
+	.read_alarm = s3c_rtc_getalarm,
 	.set_alarm = s3c_rtc_setalarm,
 	.alarm_irq_enable = s3c_rtc_setaie,
 };
@@ -469,18 +467,18 @@ static int s3c_rtc_driver_remove(struct vmm_device *dev)
 {
 	struct rtc_device *rtc = dev->priv;
 
+	s3c_rtc_setaie(rtc, 0);
+
 	vmm_host_irq_unregister(s3c_rtc_alarmno, rtc);
 	vmm_host_irq_unregister(s3c_rtc_tickno, rtc);
 
-	dev->priv = NULL;
 	rtc_device_unregister(rtc);
-
-	s3c_rtc_setaie(rtc, 0);
+	dev->priv = NULL;
 
 	clk_put(rtc_clk);
 	rtc_clk = NULL;
 
-	vmm_devtree_regunmap_release(dev->node,
+	vmm_devtree_regunmap_release(dev->of_node,
 				(virtual_addr_t)s3c_rtc_base, 0);
 
 	return 0;
@@ -491,17 +489,18 @@ static int s3c_rtc_driver_probe(struct vmm_device *pdev,
 {
 	u32 alarmno, tickno;
 	struct rtc_time rtc_tm;
+	struct rtc_device *rtc;
 	int ret = VMM_OK, tmp, rc;
 
 	/* find the IRQs */
 
-	alarmno = vmm_devtree_irq_parse_map(pdev->node, 0);
+	alarmno = vmm_devtree_irq_parse_map(pdev->of_node, 0);
 	if (!alarmno) {
 		rc = VMM_ENODEV;
 		return rc;
 	}
 	s3c_rtc_alarmno = alarmno;
-	tickno = vmm_devtree_irq_parse_map(pdev->node, 1);
+	tickno = vmm_devtree_irq_parse_map(pdev->of_node, 1);
 	if (!tickno) {
 		rc = VMM_ENODEV;
 		return rc;
@@ -510,7 +509,7 @@ static int s3c_rtc_driver_probe(struct vmm_device *pdev,
 
 	/* get the memory region */
 
-	rc = vmm_devtree_request_regmap(pdev->node,
+	rc = vmm_devtree_request_regmap(pdev->of_node,
 				(virtual_addr_t *)&s3c_rtc_base, 0,
 				"S3C RTC");
 	if (rc) {
@@ -536,13 +535,10 @@ static int s3c_rtc_driver_probe(struct vmm_device *pdev,
 
 	/* register RTC and exit */
 
-	s3c_rtcops.dev.parent = pdev;
-
-	rc = rtc_device_register(&s3c_rtcops);
-
-	if (rc) {
+	rtc = rtc_device_register(pdev, pdev->name, &s3c_rtc_ops, NULL);
+	if (VMM_IS_ERR(rtc)) {
 		dev_err(pdev, "cannot attach rtc\n");
-		ret = rc;
+		ret = VMM_PTR_ERR(rtc);
 		goto err_nortc;
 	}
 
@@ -578,20 +574,18 @@ static int s3c_rtc_driver_probe(struct vmm_device *pdev,
 		writew(tmp, s3c_rtc_base + S3C2410_RTCCON);
 	}
 
-	pdev->priv = &s3c_rtcops;
-
-	s3c_rtc_setfreq(&s3c_rtcops, 1);
+	s3c_rtc_setfreq(rtc, 1);
 
 	if ((rc =
 	     vmm_host_irq_register(s3c_rtc_alarmno, "s3c_rtc_alarm",
-				   s3c_rtc_alarmirq, &s3c_rtcops))) {
+				   s3c_rtc_alarmirq, rtc))) {
 		dev_err(pdev, "IRQ%d error %d\n", s3c_rtc_alarmno, rc);
 		goto err_alarm_irq;
 	}
 
 	if ((rc =
 	     vmm_host_irq_register(s3c_rtc_tickno, "s3c_rtc_tick",
-				   s3c_rtc_tickirq, &s3c_rtcops))) {
+				   s3c_rtc_tickirq, rtc))) {
 		dev_err(pdev, "IRQ%d error %d\n", s3c_rtc_tickno, rc);
 		goto err_tick_irq;
 	}
@@ -601,11 +595,11 @@ static int s3c_rtc_driver_probe(struct vmm_device *pdev,
 	return 0;
 
  err_tick_irq:
-	vmm_host_irq_unregister(s3c_rtc_alarmno, &s3c_rtcops);
+	vmm_host_irq_unregister(s3c_rtc_alarmno, rtc);
 
  err_alarm_irq:
 	pdev->priv = NULL;
-	rtc_device_unregister(&s3c_rtcops);
+	rtc_device_unregister(rtc);
 
  err_nortc:
 	s3c_rtc_enable(pdev, 0);
@@ -613,7 +607,7 @@ static int s3c_rtc_driver_probe(struct vmm_device *pdev,
 	clk_put(rtc_clk);
 
  err_clk:
-	vmm_devtree_regunmap_release(pdev->node,
+	vmm_devtree_regunmap_release(pdev->of_node,
 				(virtual_addr_t)s3c_rtc_base, 0);
 
  err_nomap:

@@ -25,10 +25,12 @@
  */
 
 #include <vmm_error.h>
+#include <vmm_limits.h>
 #include <vmm_heap.h>
 #include <vmm_stdio.h>
 #include <vmm_devtree.h>
 #include <vmm_devdrv.h>
+#include <vmm_cpumask.h>
 #include <vmm_platform.h>
 #include <vmm_host_irq.h>
 #include <vmm_iommu.h>
@@ -48,6 +50,8 @@ struct platform_pt_state {
 	struct vmm_guest *guest;
 	u32 irq_count;
 	u32 *host_irqs;
+	u32 *host_irqs_type;
+	u32 *host_irqs_cpu;
 	u32 *guest_irqs;
 	struct vmm_device *dev;
 	struct vmm_iommu_domain *dom;
@@ -74,41 +78,61 @@ static vmm_irq_return_t platform_pt_routed_irq(int irq, void *dev)
 		goto done;
 	}
 
-	/* Lower the interrupt level.
-	 * This will clear previous interrupt state.
+	/* First lower the interrupt level to clear previous
+	 * interrupt state. Next elevate the interrupt level
+	 * to force interrupt triggering.
 	 */
-	rc = vmm_devemu_emulate_irq(s->guest, guest_irq, 0);
+	rc = vmm_devemu_emulate_irq2(s->guest, guest_irq, 0, 1);
 	if (rc) {
-		vmm_printf("%s: Emulate Guest=%s irq=%d level=0 failed\n",
-			   __func__, s->guest->name, guest_irq);
-	}
-
-	/* Elevate the interrupt level.
-	 * This will force interrupt triggering.
-	 */
-	rc = vmm_devemu_emulate_irq(s->guest, guest_irq, 1);
-	if (rc) {
-		vmm_printf("%s: Emulate Guest=%s irq=%d level=1 failed\n",
-			   __func__, s->guest->name, guest_irq);
+		vmm_printf("%s: Emulate Guest=%s irq=%d "
+			   "level0=0 level1=1 failed (error %d)\n",
+			   __func__, s->guest->name, guest_irq, rc);
 	}
 
 done:
 	return VMM_IRQ_HANDLED;
 }
 
-static int platform_pt_reset(struct vmm_emudev *edev)
+static void platform_pt_notify(struct platform_pt_state *s,
+				u32 guest_irq, int cpu, bool enabled)
 {
-	u32 i;
-	struct platform_pt_state *s = edev->priv;
+	bool found = FALSE;
+	u32 i, host_irq = 0;
 
+	/* Find host irq */
 	for (i = 0; i < s->irq_count; i++) {
-		vmm_devemu_map_host2guest_irq(s->guest,
-					      s->guest_irqs[i],
-					      s->host_irqs[i]);
+		if (s->guest_irqs[i] == guest_irq) {
+			host_irq = s->host_irqs[i];
+			found = TRUE;
+			break;
+		}
+	}
+	if (!found) {
+		return;
 	}
 
-	return VMM_OK;
+	if (enabled) {
+		vmm_host_irq_unmask(host_irq);
+	} else {
+		vmm_host_irq_mask(host_irq);
+	}
 }
+
+static void platform_pt_notify_enabled(u32 irq, int cpu, void *opaque)
+{
+	platform_pt_notify(opaque, irq, cpu, TRUE);
+}
+
+static void platform_pt_notify_disabled(u32 irq, int cpu, void *opaque)
+{
+	platform_pt_notify(opaque, irq, cpu, FALSE);
+}
+
+static struct vmm_devemu_irqchip platform_pt_irqchip = {
+	.name = "PLATFORM_PT",
+	.notify_enabled = platform_pt_notify_enabled,
+	.notify_disabled = platform_pt_notify_disabled,
+};
 
 static int platform_pt_fault(struct vmm_iommu_domain *dom,
 			     struct vmm_device *dev,
@@ -126,51 +150,82 @@ static int platform_pt_fault(struct vmm_iommu_domain *dom,
 	return 0;
 }
 
-static void platform_pt_iter(struct vmm_guest *guest,
-			     struct vmm_region *reg,
-			     void *priv)
+static void platform_pt_mapping_iter(struct vmm_guest *guest,
+				     struct vmm_region *reg,
+				     physical_addr_t guest_phys,
+				     physical_addr_t host_phys,
+				     physical_size_t size,
+				     void *priv)
 {
 	struct platform_pt_state *s = priv;
 
-	/* Map entire guest region */
-	vmm_iommu_map(s->dom,
-		      VMM_REGION_GPHYS_START(reg),
-		      VMM_REGION_HPHYS_START(reg),
-		      VMM_REGION_GPHYS_END(reg) - VMM_REGION_GPHYS_START(reg),
+	/* Create IOMMU mapping for given guest region mapping */
+	vmm_iommu_map(s->dom, guest_phys, host_phys, size,
 		      VMM_IOMMU_READ|VMM_IOMMU_WRITE);
+}
+
+static void platform_pt_region_iter(struct vmm_guest *guest,
+				    struct vmm_region *reg,
+				    void *priv)
+{
+	struct platform_pt_state *s = priv;
+
+	/* Iterate over each mapping of guest region */
+	vmm_guest_iterate_mapping(guest, reg,
+				  platform_pt_mapping_iter, s);
 }
 
 static int platform_pt_guest_aspace_notification(
 					struct vmm_notifier_block *nb,
 					unsigned long evt, void *data)
 {
+	u32 i;
 	struct vmm_guest_aspace_event *edata = data;
 	struct platform_pt_state *s =
 			container_of(nb, struct platform_pt_state, nb);
 
+	/* We are only interested in guest aspace init events so,
+	 * ignore other events.
+	 */
 	if (evt != VMM_GUEST_ASPACE_EVENT_INIT) {
-		/* We are only interested in unregister events so,
-		 * don't care about this event.
-		 */
 		return NOTIFY_DONE;
 	}
 
+	/* We are only interested in events for our guest */
 	if (s->guest != edata->guest) {
-		/* We are only interested in events for our guest */
 		return NOTIFY_DONE;
 	}
 
+	/* Map host IRQs to Guest IRQs */
+	for (i = 0; i < s->irq_count; i++) {
+		vmm_devemu_map_host2guest_irq(s->guest,
+					      s->guest_irqs[i],
+					      s->host_irqs[i]);
+	}
+
+	/* Iterate over each real ram regions of guest */
 	if (s->dom) {
-		/* Iterate over each real ram regions of guest */
 		vmm_guest_iterate_region(s->guest,
 					 VMM_REGION_REAL |
 					 VMM_REGION_MEMORY |
-					 VMM_REGION_ISRAM |
-					 VMM_REGION_ISHOSTRAM,
-					 platform_pt_iter, s);
+					 VMM_REGION_ISRAM,
+					 platform_pt_region_iter, s);
 	}
 
 	return NOTIFY_OK;
+}
+
+static int platform_pt_reset(struct vmm_emudev *edev)
+{
+	u32 i;
+	struct platform_pt_state *s = edev->priv;
+
+	/* Mask all host IRQs */
+	for (i = 0; i < s->irq_count; i++) {
+		vmm_host_irq_mask(s->host_irqs[i]);
+	}
+
+	return VMM_OK;
 }
 
 static int platform_pt_probe(struct vmm_guest *guest,
@@ -198,9 +253,10 @@ static int platform_pt_probe(struct vmm_guest *guest,
 
 	s->guest = guest;
 	s->irq_count = vmm_devtree_attrlen(edev->node, "host-interrupts");
-	s->irq_count = s->irq_count / sizeof(u32);
+	s->irq_count = s->irq_count / (sizeof(u32) * 3);
 	s->guest_irqs = NULL;
 	s->host_irqs = NULL;
+	s->host_irqs_type = NULL;
 
 	if (s->irq_count) {
 		s->host_irqs = vmm_zalloc(sizeof(u32) * s->irq_count);
@@ -209,23 +265,72 @@ static int platform_pt_probe(struct vmm_guest *guest,
 			goto platform_pt_probe_freestate_fail;
 		}
 
+		s->host_irqs_type = vmm_zalloc(sizeof(u32) * s->irq_count);
+		if (!s->host_irqs_type) {
+			rc = VMM_ENOMEM;
+			goto platform_pt_probe_freehirqs_fail;
+		}
+
+		s->host_irqs_cpu = vmm_zalloc(sizeof(u32) * s->irq_count);
+		if (!s->host_irqs_cpu) {
+			rc = VMM_ENOMEM;
+			goto platform_pt_probe_freehirqst_fail;
+		}
+
 		s->guest_irqs = vmm_zalloc(sizeof(u32) * s->irq_count);
 		if (!s->guest_irqs) {
 			rc = VMM_ENOMEM;
-			goto platform_pt_probe_freehirqs_fail;
+			goto platform_pt_probe_freehirqsc_fail;
 		}
 	}
 
 	for (i = 0; i < s->irq_count; i++) {
 		rc = vmm_devtree_read_u32_atindex(edev->node,
 						  "host-interrupts",
-						  &s->host_irqs[i], i);
+						  &s->host_irqs[i], i*3);
 		if (rc) {
 			goto platform_pt_probe_cleanupirqs_fail;
 		}
 
-		rc = vmm_devtree_irq_get(edev->node, &s->guest_irqs[i], i);
+		rc = vmm_devtree_read_u32_atindex(edev->node,
+					"host-interrupts",
+					&s->host_irqs_type[i], i*3 + 1);
 		if (rc) {
+			goto platform_pt_probe_cleanupirqs_fail;
+		}
+
+		rc = vmm_devtree_read_u32_atindex(edev->node,
+					"host-interrupts",
+					&s->host_irqs_cpu[i], i*3 + 2);
+		if (rc) {
+			goto platform_pt_probe_cleanupirqs_fail;
+		}
+
+		rc = vmm_devtree_read_u32_atindex(edev->node,
+					  VMM_DEVTREE_INTERRUPTS_ATTR_NAME,
+					  &s->guest_irqs[i], i);
+		if (rc) {
+			goto platform_pt_probe_cleanupirqs_fail;
+		}
+
+		rc = vmm_host_irq_set_type(s->host_irqs[i],
+					   s->host_irqs_type[i]);
+		if (rc) {
+			goto platform_pt_probe_cleanupirqs_fail;
+		}
+
+		if ((s->host_irqs_cpu[i] != U32_MAX) &&
+		    (s->host_irqs_cpu[i] < vmm_num_online_cpus())) {
+			rc = vmm_host_irq_set_affinity(s->host_irqs[i],
+				vmm_cpumask_of(s->host_irqs_cpu[i]), TRUE);
+			if (rc) {
+				goto platform_pt_probe_cleanupirqs_fail;
+			}
+		} else if ((s->host_irqs_cpu[i] != U32_MAX) &&
+			   (s->host_irqs_cpu[i] >= vmm_num_online_cpus())) {
+			vmm_printf("%s: %s invalid cpu=%d\n",
+				   __func__, s->name, s->host_irqs_cpu[i]);
+			rc = VMM_EINVALID;
 			goto platform_pt_probe_cleanupirqs_fail;
 		}
 
@@ -237,6 +342,15 @@ static int platform_pt_probe(struct vmm_guest *guest,
 		rc = vmm_host_irq_register(s->host_irqs[i], s->name,
 					   platform_pt_routed_irq, s);
 		if (rc) {
+			vmm_host_irq_unmark_routed(s->host_irqs[i]);
+			goto platform_pt_probe_cleanupirqs_fail;
+		}
+		vmm_host_irq_mask(s->host_irqs[i]);
+
+		rc = vmm_devemu_register_irqchip(s->guest, s->guest_irqs[i],
+						 &platform_pt_irqchip, s);
+		if (rc) {
+			vmm_host_irq_unregister(s->host_irqs[i], s);
 			vmm_host_irq_unmark_routed(s->host_irqs[i]);
 			goto platform_pt_probe_cleanupirqs_fail;
 		}
@@ -264,31 +378,44 @@ static int platform_pt_probe(struct vmm_guest *guest,
 
 		vmm_devdrv_ref_device(s->dev);
 
-		s->dom = vmm_iommu_domain_alloc(&platform_bus,
-						s->dev->iommu_group,
-						VMM_IOMMU_DOMAIN_UNMANAGED);
+		s->dom = vmm_iommu_group_get_domain(s->dev->iommu_group);
+		if (!s->dom) {
+			s->dom = vmm_iommu_domain_alloc(s->name, &platform_bus,
+				vmm_iommu_group_controller(s->dev->iommu_group),
+				VMM_IOMMU_DOMAIN_UNMANAGED);
+		}
 		if (!s->dom) {
 			rc = VMM_EFAIL;
 			goto platform_pt_probe_dref_dev_fail;
 		}
 
 		vmm_iommu_set_fault_handler(s->dom, platform_pt_fault, s);
+
+		rc = vmm_iommu_group_attach_domain(s->dev->iommu_group,
+						   s->dom);
+		if (rc) {
+			goto platform_pt_probe_free_dom_fail;
+		}
 	}
 
 	s->nb.notifier_call = &platform_pt_guest_aspace_notification;
 	s->nb.priority = 0;
 	rc = vmm_guest_aspace_register_client(&s->nb);
 	if (rc) {
-		goto platform_pt_probe_free_dom_fail;
+		goto platform_pt_probe_detach_dom_fail;
 	}
 
 	edev->priv = s;
 
 	return VMM_OK;
 
+platform_pt_probe_detach_dom_fail:
+	if (s->dom) {
+		vmm_iommu_group_detach_domain(s->dev->iommu_group);
+	}
 platform_pt_probe_free_dom_fail:
 	if (s->dom) {
-		vmm_iommu_domain_free(s->dom);
+		vmm_iommu_domain_dref(s->dom);
 	}
 platform_pt_probe_dref_dev_fail:
 	if (s->dev) {
@@ -296,11 +423,21 @@ platform_pt_probe_dref_dev_fail:
 	}
 platform_pt_probe_cleanupirqs_fail:
 	for (i = 0; i < irq_reg_count; i++) {
+		vmm_devemu_unregister_irqchip(s->guest, s->guest_irqs[i],
+					      &platform_pt_irqchip, s);
 		vmm_host_irq_unregister(s->host_irqs[i], s);
 		vmm_host_irq_unmark_routed(s->host_irqs[i]);
 	}
 	if (s->guest_irqs) {
 		vmm_free(s->guest_irqs);
+	}
+platform_pt_probe_freehirqsc_fail:
+	if (s->host_irqs_cpu) {
+		vmm_free(s->host_irqs_cpu);
+	}
+platform_pt_probe_freehirqst_fail:
+	if (s->host_irqs_type) {
+		vmm_free(s->host_irqs_type);
 	}
 platform_pt_probe_freehirqs_fail:
 	if (s->host_irqs) {
@@ -323,17 +460,28 @@ static int platform_pt_remove(struct vmm_emudev *edev)
 
 	vmm_guest_aspace_unregister_client(&s->nb);
 	if (s->dom) {
-		vmm_iommu_domain_free(s->dom);
+		vmm_iommu_group_detach_domain(s->dev->iommu_group);
+	}
+	if (s->dom) {
+		vmm_iommu_domain_dref(s->dom);
 	}
 	if (s->dev) {
 		vmm_devdrv_dref_device(s->dev);
 	}
 	for (i = 0; i < s->irq_count; i++) {
+		vmm_devemu_unregister_irqchip(s->guest, s->guest_irqs[i],
+					      &platform_pt_irqchip, s);
 		vmm_host_irq_unregister(s->host_irqs[i], s);
 		vmm_host_irq_unmark_routed(s->host_irqs[i]);
 	}
 	if (s->guest_irqs) {
 		vmm_free(s->guest_irqs);
+	}
+	if (s->host_irqs_cpu) {
+		vmm_free(s->host_irqs_cpu);
+	}
+	if (s->host_irqs_type) {
+		vmm_free(s->host_irqs_type);
 	}
 	if (s->host_irqs) {
 		vmm_free(s->host_irqs);

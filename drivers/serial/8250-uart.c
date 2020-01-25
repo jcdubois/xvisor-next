@@ -125,14 +125,16 @@ void uart_8250_lowlevel_putc(struct uart_8250_port *port, u8 ch)
 void uart_8250_lowlevel_init(struct uart_8250_port *port)
 {
 	u16 bdiv;
-	bdiv = udiv32(port->input_clock, (16 * port->baudrate));
 
 	/* set DLAB bit */
 	uart_8250_out(port, UART_LCR_OFFSET, 0x80);
-	/* set baudrate divisor */
-	uart_8250_out(port, UART_DLL_OFFSET, bdiv & 0xFF);
-	/* set baudrate divisor */
-	uart_8250_out(port, UART_DLM_OFFSET, (bdiv >> 8) & 0xFF);
+	if (!port->skip_baudrate_config) {
+		bdiv = udiv32(port->input_clock, (16 * port->baudrate));
+		/* set baudrate divisor */
+		uart_8250_out(port, UART_DLL_OFFSET, bdiv & 0xFF);
+		/* set baudrate divisor */
+		uart_8250_out(port, UART_DLM_OFFSET, (bdiv >> 8) & 0xFF);
+	}
 	/* clear DLAB; set 8 bits, no parity */
 	uart_8250_out(port, UART_LCR_OFFSET, 0x03);
 	/* enable FIFO */
@@ -209,8 +211,7 @@ static u32 uart_8250_tx(struct serial *p, u8 *src, size_t len)
 	return i;
 }
 
-static int uart_8250_driver_probe(struct vmm_device *dev,
-				  const struct vmm_devtree_nodeid *devid)
+static int uart_8250_driver_probe(struct vmm_device *dev)
 {
 	int rc;
 	struct uart_8250_port *port;
@@ -265,7 +266,9 @@ static int uart_8250_driver_probe(struct vmm_device *dev,
 
 	rc = vmm_devtree_clock_frequency(dev->of_node, &port->input_clock);
 	if (rc) {
-		goto free_reg;
+		port->skip_baudrate_config = TRUE;
+	} else {
+		port->skip_baudrate_config = FALSE;
 	}
 
 	/* Call low-level init function

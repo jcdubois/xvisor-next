@@ -2,7 +2,7 @@
 #define __CPU_VM_H__
 
 #include <multiboot.h>
-#include <vm/amd_vmcb.h>
+#include <vm/vmcb.h>
 #include <processor_flags.h>
 #include <cpu_features.h>
 #include <vmm_types.h>
@@ -117,6 +117,8 @@ struct vcpu_hw_context {
 	u64 g_cr8;
 
 	unsigned int asid;
+	u64 eptp;
+	u64 vmcs_state;
 	unsigned long n_cr3;  /* [Note] When #VMEXIT occurs with
 			       * nested paging enabled, hCR3 is not
 			       * saved back into the VMCB (vol2 p. 409)???*/
@@ -135,15 +137,12 @@ struct vcpu_hw_context {
 	unsigned int		host_msr_count;
 	struct vmx_msr_entry	*host_msr_area;
 
-	void *vmx_on_region;
-
 	int itc_flag;  /* flags specifying which interceptions were
 			  registered for this vm. */
 	int itc_skip_flag;
 	u64 guest_start_pc; /* Guest will start execution from here (comes from DTS) */
 	physical_addr_t vmcb_pa;
 	physical_addr_t vmcs_pa;
-	physical_addr_t vmxon_region_pa;
 
 	/* on & exit handler */
 	void (*vcpu_run) (struct vcpu_hw_context *context);
@@ -179,6 +178,9 @@ struct x86_vcpu_priv {
 };
 
 #define x86_vcpu_priv(vcpu) ((struct x86_vcpu_priv *)((vcpu)->arch_priv))
+#define x86_vcpu_guest(vcpu) ((struct vmm_guest *)((vcpu)->guest))
+#define x86_vcpu_hw_context_guest(hw_context) (x86_vcpu_guest(hw_context->assoc_vcpu))
+
 #define x86_vcpu_hw_context(vcpu)					\
 	((struct vcpu_hw_context *)					\
 	 (((struct x86_vcpu_priv *)((vcpu)->arch_priv))->hw_context))	\

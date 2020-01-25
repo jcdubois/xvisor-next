@@ -6,12 +6,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
@@ -23,6 +23,42 @@
 #ifndef __CPU_DEFINES_H__
 #define __CPU_DEFINES_H__
 
+#include <vmm_const.h>
+
+#ifdef __ASSEMBLY__
+
+	.irp	num,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30
+	.equ	.L__reg_num_x\num, \num
+	.endr
+	.equ	.L__reg_num_xzr, 31
+
+	.macro	mrs_s, rt, sreg
+	 .inst (0xd5200000|(\sreg)|(.L__reg_num_\rt))
+	.endm
+
+	.macro	msr_s, sreg, rt
+	.inst (0xd5000000|(\sreg)|(.L__reg_num_\rt))
+	.endm
+
+#else
+
+asm(
+"	.irp	num,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30\n"
+"	.equ	.L__reg_num_x\\num, \\num\n"
+"	.endr\n"
+"	.equ	.L__reg_num_xzr, 31\n"
+"\n"
+"	.macro	mrs_s, rt, sreg\n"
+"	.inst	0xd5200000|(\\sreg)|(.L__reg_num_\\rt)\n"
+"	.endm\n"
+"\n"
+"	.macro	msr_s, sreg, rt\n"
+"	.inst	0xd5000000|(\\sreg)|(.L__reg_num_\\rt)\n"
+"	.endm\n"
+);
+
+#endif
+
 /*
  * ARMv8 ARM reserves the following encoding for system registers:
  * (Ref: ARMv8 ARM, Section: "System instruction class encoding overview",
@@ -33,8 +69,27 @@
  *	[11-8]  : CRm
  *	[7-5]   : Op2
  */
+#define Op0_shift	19
+#define Op0_mask	0x3
+#define Op1_shift	16
+#define Op1_mask	0x7
+#define CRn_shift	12
+#define CRn_mask	0xf
+#define CRm_shift	8
+#define CRm_mask	0xf
+#define Op2_shift	5
+#define Op2_mask	0x7
+
 #define sys_reg(op0, op1, crn, crm, op2) \
-	((((op0)&3)<<19)|((op1)<<16)|((crn)<<12)|((crm)<<8)|((op2)<<5))
+	(((op0) << Op0_shift) | ((op1) << Op1_shift) | \
+	 ((crn) << CRn_shift) | ((crm) << CRm_shift) | \
+	 ((op2) << Op2_shift))
+
+#define sys_reg_Op0(id)	(((id) >> Op0_shift) & Op0_mask)
+#define sys_reg_Op1(id)	(((id) >> Op1_shift) & Op1_mask)
+#define sys_reg_CRn(id)	(((id) >> CRn_shift) & CRn_mask)
+#define sys_reg_CRm(id)	(((id) >> CRm_shift) & CRm_mask)
+#define sys_reg_Op2(id)	(((id) >> Op2_shift) & Op2_mask)
 
 #define SYS_MIDR_EL1			sys_reg(3, 0, 0, 0, 0)
 #define SYS_MPIDR_EL1			sys_reg(3, 0, 0, 0, 5)
@@ -72,6 +127,19 @@
 #define SYS_ID_AA64MMFR0_EL1		sys_reg(3, 0, 0, 7, 0)
 #define SYS_ID_AA64MMFR1_EL1		sys_reg(3, 0, 0, 7, 1)
 #define SYS_ID_AA64MMFR2_EL1		sys_reg(3, 0, 0, 7, 2)
+
+#define SYS_APIAKEYLO_EL1		sys_reg(3, 0, 2, 1, 0)
+#define SYS_APIAKEYHI_EL1		sys_reg(3, 0, 2, 1, 1)
+#define SYS_APIBKEYLO_EL1		sys_reg(3, 0, 2, 1, 2)
+#define SYS_APIBKEYHI_EL1		sys_reg(3, 0, 2, 1, 3)
+
+#define SYS_APDAKEYLO_EL1		sys_reg(3, 0, 2, 2, 0)
+#define SYS_APDAKEYHI_EL1		sys_reg(3, 0, 2, 2, 1)
+#define SYS_APDBKEYLO_EL1		sys_reg(3, 0, 2, 2, 2)
+#define SYS_APDBKEYHI_EL1		sys_reg(3, 0, 2, 2, 3)
+
+#define SYS_APGAKEYLO_EL1		sys_reg(3, 0, 2, 3, 0)
+#define SYS_APGAKEYHI_EL1		sys_reg(3, 0, 2, 3, 1)
 
 #define SYS_CNTFRQ_EL0			sys_reg(3, 3, 14, 0, 0)
 #define SYS_CTR_EL0			sys_reg(3, 3, 0, 0, 1)
@@ -190,7 +258,7 @@
 #define PSR_PRIVBITS_MASK			(~PSR_USERBITS_MASK)
 #define PSR_ALLBITS_MASK			0xFFFFFFFF
 
-#define CPSR_MODE_MASK				PSR_MODE32_MASK	
+#define CPSR_MODE_MASK				PSR_MODE32_MASK
 #define CPSR_MODE_USER				PSR_MODE32_USER
 #define CPSR_MODE_FIQ				PSR_MODE32_FIQ
 #define CPSR_MODE_IRQ				PSR_MODE32_IRQ
@@ -205,26 +273,26 @@
 #define CPSR_IRQ_DISABLED			PSR_IRQ_DISABLED
 #define CPSR_ASYNC_ABORT_DISABLED		PSR_ASYNC_ABORT_DISABLED
 #define CPSR_BE_ENABLED				PSR_MODE32_BE_ENABLED
-#define CPSR_IT2_MASK				PSR_IT2_MASK		
-#define CPSR_IT2_SHIFT			        PSR_IT2_SHIFT		
-#define CPSR_GE_MASK			        PSR_GE_MASK		
-#define CPSR_GE_SHIFT			        PSR_GE_SHIFT		
-#define CPSR_JAZZLE_ENABLED		        PSR_JAZZLE_ENABLED	
-#define CPSR_IT1_MASK			        PSR_IT1_MASK		
-#define CPSR_IT1_SHIFT			        PSR_IT1_SHIFT		
-#define CPSR_CUMMULATE_MASK		        PSR_CUMMULATE_MASK	
-#define CPSR_CUMMULATE_SHIFT		        PSR_CUMMULATE_SHIFT	
-#define CPSR_OVERFLOW_MASK		        PSR_OVERFLOW_MASK	
-#define CPSR_OVERFLOW_SHIFT		        PSR_OVERFLOW_SHIFT	
-#define CPSR_CARRY_MASK			        PSR_CARRY_MASK		
-#define CPSR_CARRY_SHIFT		        PSR_CARRY_SHIFT	
-#define CPSR_ZERO_MASK			        PSR_ZERO_MASK		
-#define CPSR_ZERO_SHIFT			        PSR_ZERO_SHIFT		
-#define CPSR_NEGATIVE_MASK		        PSR_NEGATIVE_MASK	
-#define CPSR_NEGATIVE_SHIFT		        PSR_NEGATIVE_SHIFT	
+#define CPSR_IT2_MASK				PSR_IT2_MASK
+#define CPSR_IT2_SHIFT			        PSR_IT2_SHIFT
+#define CPSR_GE_MASK			        PSR_GE_MASK
+#define CPSR_GE_SHIFT			        PSR_GE_SHIFT
+#define CPSR_JAZZLE_ENABLED		        PSR_JAZZLE_ENABLED
+#define CPSR_IT1_MASK			        PSR_IT1_MASK
+#define CPSR_IT1_SHIFT			        PSR_IT1_SHIFT
+#define CPSR_CUMMULATE_MASK		        PSR_CUMMULATE_MASK
+#define CPSR_CUMMULATE_SHIFT		        PSR_CUMMULATE_SHIFT
+#define CPSR_OVERFLOW_MASK		        PSR_OVERFLOW_MASK
+#define CPSR_OVERFLOW_SHIFT		        PSR_OVERFLOW_SHIFT
+#define CPSR_CARRY_MASK			        PSR_CARRY_MASK
+#define CPSR_CARRY_SHIFT		        PSR_CARRY_SHIFT
+#define CPSR_ZERO_MASK			        PSR_ZERO_MASK
+#define CPSR_ZERO_SHIFT			        PSR_ZERO_SHIFT
+#define CPSR_NEGATIVE_MASK		        PSR_NEGATIVE_MASK
+#define CPSR_NEGATIVE_SHIFT		        PSR_NEGATIVE_SHIFT
 
 #define CPSR_NZCV_MASK				PSR_NZCV_MASK
-#define CPSR_IT_MASK				PSR_IT_MASK	
+#define CPSR_IT_MASK				PSR_IT_MASK
 #define CPSR_USERBITS_MASK			PSR_USERBITS_MASK
 #define CPSR_PRIVBITS_MASK			PSR_PRIVBITS_MASK
 #define CPSR_ALLBITS_MASK			PSR_ALLBITS_MASK
@@ -340,9 +408,23 @@
 
 /* HCR_EL2 */
 #define HCR_INITVAL					0x000000000
-#define HCR_ID_MASK					0x200000000
+#define HCR_FWB_MASK					_AC(0x400000000000, UL)
+#define HCR_FWB_SHIFT					46
+#define HCR_APL_MASK					_AC(0x20000000000, UL)
+#define HCR_APL_SHIFT					41
+#define HCR_APK_MASK					_AC(0x10000000000, UL)
+#define HCR_APK_SHIFT					40
+#define HCR_TEA_MASK					_AC(0x2000000000, UL)
+#define HCR_TEA_SHIFT					37
+#define HCR_TERR_MASK					_AC(0x1000000000, UL)
+#define HCR_TERR_SHIFT					36
+#define HCR_TLOR_MASK					_AC(0x800000000, UL)
+#define HCR_TLOR_SHIFT					35
+#define HCR_E2H_MASK					_AC(0x400000000, UL)
+#define HCR_E2H_SHIFT					34
+#define HCR_ID_MASK					_AC(0x200000000, UL)
 #define HCR_ID_SHIFT					33
-#define HCR_CD_MASK					0x100000000
+#define HCR_CD_MASK					_AC(0x100000000, UL)
 #define HCR_CD_SHIFT					32
 #define HCR_RW_MASK					0x080000000
 #define HCR_RW_SHIFT					31
@@ -777,6 +859,42 @@
 #define MIDR_REVISON_MASK				0x0000000F
 #define MIDR_REVISON_SHIFT				0
 
+/* ID_AA64ISAR0_EL1 */
+#define ID_AA64ISAR0_TS_SHIFT				52
+#define ID_AA64ISAR0_FHM_SHIFT				48
+#define ID_AA64ISAR0_DP_SHIFT				44
+#define ID_AA64ISAR0_SM4_SHIFT				40
+#define ID_AA64ISAR0_SM3_SHIFT				36
+#define ID_AA64ISAR0_SHA3_SHIFT				32
+#define ID_AA64ISAR0_RDM_SHIFT				28
+#define ID_AA64ISAR0_ATOMICS_SHIFT			20
+#define ID_AA64ISAR0_CRC32_SHIFT			16
+#define ID_AA64ISAR0_SHA2_SHIFT				12
+#define ID_AA64ISAR0_SHA1_SHIFT				8
+#define ID_AA64ISAR0_AES_SHIFT				4
+
+/* ID_AA64ISAR1_EL1 */
+#define ID_AA64ISAR1_SB_SHIFT				36
+#define ID_AA64ISAR1_GPI_SHIFT				28
+#define ID_AA64ISAR1_GPA_SHIFT				24
+#define ID_AA64ISAR1_LRCPC_SHIFT			20
+#define ID_AA64ISAR1_FCMA_SHIFT				16
+#define ID_AA64ISAR1_JSCVT_SHIFT			12
+#define ID_AA64ISAR1_API_SHIFT				8
+#define ID_AA64ISAR1_API_MASK		(0xfUL << ID_AA64ISAR1_API_SHIFT)
+#define ID_AA64ISAR1_APA_SHIFT				4
+#define ID_AA64ISAR1_APA_MASK		(0xfUL << ID_AA64ISAR1_APA_SHIFT)
+#define ID_AA64ISAR1_DPB_SHIFT				0
+
+#define ID_AA64ISAR1_APA_NI				0x0
+#define ID_AA64ISAR1_APA_ARCHITECTED			0x1
+#define ID_AA64ISAR1_API_NI				0x0
+#define ID_AA64ISAR1_API_IMP_DEF			0x1
+#define ID_AA64ISAR1_GPA_NI				0x0
+#define ID_AA64ISAR1_GPA_ARCHITECTED			0x1
+#define ID_AA64ISAR1_GPI_NI				0x0
+#define ID_AA64ISAR1_GPI_IMP_DEF			0x1
+
 /* ID_PFR0_EL1 */
 #define ID_PFR0_THUMBEE_MASK				0x0000f000
 #define ID_PFR0_THUMBEE_SHIFT				12
@@ -801,9 +919,9 @@
 #define ID_PFR1_PROGMODEL_SHIFT				0
 
 /* ID_AA64PFR0_EL1 */
-#define ID_AA64PFR0_ASIMD_MASK				0x00020000
-#define ID_AA64PFR0_ASIMD_SHIFT				17
-#define ID_AA64PFR0_FPU_MASK				0x00010000
+#define ID_AA64PFR0_ASIMD_MASK				0x00f00000
+#define ID_AA64PFR0_ASIMD_SHIFT				20
+#define ID_AA64PFR0_FPU_MASK				0x000f0000
 #define ID_AA64PFR0_FPU_SHIFT				16
 #define ID_AA64PFR0_EL3_A32				0x00002000
 #define ID_AA64PFR0_EL3_MASK				0x0000f000
@@ -817,6 +935,45 @@
 #define ID_AA64PFR0_EL0_A32				0x00000002
 #define ID_AA64PFR0_EL0_MASK				0x0000000f
 #define ID_AA64PFR0_EL0_SHIFT				0
+
+/* Field offsets for struct arch_regs */
+#define ARM_ARCH_REGS_GPR0				0x0
+#define ARM_ARCH_REGS_GPR1				0x8
+#define ARM_ARCH_REGS_GPR2				0x10
+#define ARM_ARCH_REGS_GPR3				0x18
+#define ARM_ARCH_REGS_GPR4				0x20
+#define ARM_ARCH_REGS_GPR5				0x28
+#define ARM_ARCH_REGS_GPR6				0x30
+#define ARM_ARCH_REGS_GPR7				0x38
+#define ARM_ARCH_REGS_GPR8				0x40
+#define ARM_ARCH_REGS_GPR9				0x48
+#define ARM_ARCH_REGS_GPR10				0x50
+#define ARM_ARCH_REGS_GPR11				0x58
+#define ARM_ARCH_REGS_GPR12				0x60
+#define ARM_ARCH_REGS_GPR13				0x68
+#define ARM_ARCH_REGS_GPR14				0x70
+#define ARM_ARCH_REGS_GPR15				0x78
+#define ARM_ARCH_REGS_GPR16				0x80
+#define ARM_ARCH_REGS_GPR17				0x88
+#define ARM_ARCH_REGS_GPR18				0x90
+#define ARM_ARCH_REGS_GPR19				0x98
+#define ARM_ARCH_REGS_GPR20				0xa0
+#define ARM_ARCH_REGS_GPR21				0xa8
+#define ARM_ARCH_REGS_GPR22				0xb0
+#define ARM_ARCH_REGS_GPR23				0xb8
+#define ARM_ARCH_REGS_GPR24				0xc0
+#define ARM_ARCH_REGS_GPR25				0xc8
+#define ARM_ARCH_REGS_GPR26				0xd0
+#define ARM_ARCH_REGS_GPR27				0xd8
+#define ARM_ARCH_REGS_GPR28				0xe0
+#define ARM_ARCH_REGS_GPR29				0xe8
+#define ARM_ARCH_REGS_GPR30				0xf0
+#define ARM_ARCH_REGS_GPR31				0xf8
+#define ARM_ARCH_REGS_LR				0xf0
+#define ARM_ARCH_REGS_SP				0xf8
+#define ARM_ARCH_REGS_PC				0x100
+#define ARM_ARCH_REGS_PSTATE				0x108
+#define ARM_ARCH_REGS_SIZE				0x110
 
 /* Field offsets for struct arm_priv_sysregs */
 #define ARM_PRIV_SYSREGS_sp_el0				0x0
@@ -857,5 +1014,17 @@
 #define ARM_PRIV_VFP_fpsr				0x10
 #define ARM_PRIV_VFP_fpexc32				0x14
 #define ARM_PRIV_VFP_fpregs				0x18
+
+/* Field offsets for struct arm_priv_ptrauth */
+#define ARM_PRIV_PTRAUTH_apiakeylo_el1			0x0
+#define ARM_PRIV_PTRAUTH_apiakeyhi_el1			0x8
+#define ARM_PRIV_PTRAUTH_apibkeylo_el1			0x10
+#define ARM_PRIV_PTRAUTH_apibkeyhi_el1			0x18
+#define ARM_PRIV_PTRAUTH_apdakeylo_el1			0x20
+#define ARM_PRIV_PTRAUTH_apdakeyhi_el1			0x28
+#define ARM_PRIV_PTRAUTH_apdbkeylo_el1			0x30
+#define ARM_PRIV_PTRAUTH_apdbkeyhi_el1			0x38
+#define ARM_PRIV_PTRAUTH_apgakeylo_el1			0x40
+#define ARM_PRIV_PTRAUTH_apgakeyhi_el1			0x48
 
 #endif

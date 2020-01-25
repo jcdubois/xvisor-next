@@ -37,55 +37,35 @@
 
 #define pr_warn(msg...)			vmm_printf(msg)
 #ifdef DEBUG
-#define pr_debug(msg...)                vmm_printf(msg)
+#define pr_debug(msg...)		vmm_printf(msg)
 #else
 #define pr_debug(msg...)
 #endif
 
-int vmm_devtree_irq_get(struct vmm_devtree_node *node,
-		        u32 *irq, int index)
-{
-	u32 alen;
-	const char *aval;
-
-	if (!node || !irq || index < 0) {
-		return VMM_EFAIL;
-	}
-
-	aval = vmm_devtree_attrval(node, VMM_DEVTREE_INTERRUPTS_ATTR_NAME);
-	if (!aval) {
-		return VMM_ENOTAVAIL;
-	}
-
-	alen = vmm_devtree_attrlen(node, VMM_DEVTREE_INTERRUPTS_ATTR_NAME);
-	if (alen <= (index * sizeof(u32))) {
-		return VMM_ENOTAVAIL;
-	}
-
-	aval += index * sizeof(u32);
-	*irq  = vmm_be32_to_cpu(*((u32 *)aval));
-
-	return VMM_OK;
-}
-
 u32 vmm_devtree_irq_count(struct vmm_devtree_node *node)
 {
-        u32 alen, tmp, rc;
-        struct vmm_devtree_node *parent = vmm_devtree_irq_find_parent(node);
+	int rc;
+	u32 alen, tmp;
+	struct vmm_devtree_node *parent;
 
-        if (!node || !parent) {
-                return 0;
-        }
+	rc = vmm_devtree_count_phandle_with_args(node,
+				"interrupts-extended", "#interrupt-cells");
+	if (rc >= 0)
+		return rc;
 
-        rc = vmm_devtree_read_u32(parent, "#interrupt-cells", &tmp);
-        vmm_devtree_dref_node(parent);
-        if (rc) {
+	parent = vmm_devtree_irq_find_parent(node);
+	if (!node || !parent) {
 		return 0;
 	}
 
-        alen = vmm_devtree_attrlen(node, VMM_DEVTREE_INTERRUPTS_ATTR_NAME);
+	rc = vmm_devtree_read_u32(parent, "#interrupt-cells", &tmp);
+	vmm_devtree_dref_node(parent);
+	if (rc)
+		return 0;
 
-        return udiv32(alen, (sizeof(u32) * tmp));
+	alen = vmm_devtree_attrlen(node, VMM_DEVTREE_INTERRUPTS_ATTR_NAME);
+
+	return udiv32(alen, (sizeof(u32) * tmp));
 }
 
 struct vmm_devtree_node *vmm_devtree_irq_find_parent(
@@ -132,6 +112,12 @@ int vmm_devtree_irq_parse_one(struct vmm_devtree_node *device, int index,
 
 	pr_debug("%s: dev=%s, index=%d\n", __func__, device->name, index);
 
+	/* Try the new-style interrupts-extended first */
+	res = vmm_devtree_parse_phandle_with_args(device, "interrupts-extended",
+					"#interrupt-cells", index, out_irq);
+	if (res == VMM_OK)
+		return res;
+
 	attr = vmm_devtree_getattr(device, "interrupts");
 	if (NULL == attr) {
 		return VMM_EINVALID;
@@ -144,10 +130,12 @@ int vmm_devtree_irq_parse_one(struct vmm_devtree_node *device, int index,
 	/* Look for the interrupt parent. */
 	p = vmm_devtree_irq_find_parent(device);
 	if (NULL == p) {
-		/* If no interrupt-parent fount then try
-		 * the original vmm_devtree_irq_get() API
+		/* If no interrupt-parent fount then
+		 * read interrupts attribute directly
 		 */
-		res = vmm_devtree_irq_get(device, &intsize, index);
+		res = vmm_devtree_read_u32_atindex(device,
+					VMM_DEVTREE_INTERRUPTS_ATTR_NAME,
+					&intsize, index);
 		if (res != VMM_OK) {
 			return res;
 		}
@@ -248,7 +236,7 @@ static unsigned int vmm_devtree_irq_create_mapping(
 	}
 	hirq = rc;
 
-	pr_debug("Extended IRQ %d set as the %dth irq on %s\n", hirq, hwirq,
+	pr_debug("Extended IRQ %d set as the %ldth irq on %s\n", hirq, hwirq,
 		 domain->of_node->name);
 
 	irq = vmm_host_irq_get(hirq);

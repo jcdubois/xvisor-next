@@ -51,7 +51,7 @@ void __init arch_defterm_early_putc(u8 ch)
 #include <drv/serial/8250-uart.h>
 
 /*
- * 8250/16550 (8-bit aligned registers) single character TX.
+ * 8250/16550 (8-bit 1-byte aligned registers) single character TX.
  */
 void __init arch_defterm_early_putc(u8 ch)
 {
@@ -60,12 +60,26 @@ void __init arch_defterm_early_putc(u8 ch)
 	vmm_writeb(ch, early_base + UART_THR_OFFSET);
 }
 
+#elif defined(CONFIG_DEFTERM_EARLY_UART8250_8BIT_4ALIGN)
+
+#include <drv/serial/8250-uart.h>
+
+/*
+ * 8250/16550 (8-bit 4-byte aligned registers) single character TX.
+ */
+void __init arch_defterm_early_putc(u8 ch)
+{
+	while (!(vmm_readb(early_base + (UART_LSR_OFFSET << 2)) & UART_LSR_THRE))
+		;
+	vmm_writeb(ch, early_base + (UART_THR_OFFSET << 2));
+}
+
 #elif defined(CONFIG_DEFTERM_EARLY_UART8250_32BIT)
 
 #include <drv/serial/8250-uart.h>
 
 /*
- * 8250/16550 (32-bit aligned registers) single character TX.
+ * 8250/16550 (32-bit 4-byte aligned registers) single character TX.
  */
 void __init arch_defterm_early_putc(u8 ch)
 {
@@ -90,7 +104,15 @@ void __init arch_defterm_early_putc(u8 ch)
 	while (!(vmm_readl(early_base + IMX21_UTS) & UTS_TXEMPTY)) ;
 }
 
-#elif defined(CONFIG_DEFTERM_EARLY_SCIF)
+#elif defined(CONFIG_DEFTERM_EARLY_SCIF) || defined(CONFIG_DEFTERM_EARLY_SCIFA)
+
+#if defined(CONFIG_DEFTERM_EARLY_SCIF)
+#define SCIF_SCFTDR    (0x0C)    /* Transmit FIFO data register    */
+#define SCIF_SCFSR     (0x10)    /* Serial status register         */
+#elif defined(CONFIG_DEFTERM_EARLY_SCIFA)
+#define SCIF_SCFTDR    (0x20)    /* Transmit FIFO data register    */
+#define SCIF_SCFSR     (0x14)    /* Serial status register         */
+#endif
 
 #include <drv/serial/scif.h>
 

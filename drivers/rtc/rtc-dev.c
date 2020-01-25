@@ -41,8 +41,8 @@
 
 int rtc_device_get_time(struct rtc_device *rdev, struct rtc_time *tm)
 {
-	if (rdev && tm && rdev->get_time) {
-		return rdev->get_time(rdev, tm);
+	if (rdev && tm && rdev->ops && rdev->ops->read_time) {
+		return rdev->ops->read_time(rdev, tm);
 	}
 
 	return VMM_EFAIL;
@@ -51,8 +51,8 @@ VMM_EXPORT_SYMBOL(rtc_device_get_time);
 
 int rtc_device_set_time(struct rtc_device *rdev, struct rtc_time *tm)
 {
-	if (rdev && rdev->set_time) {
-		return rdev->set_time(rdev, tm);
+	if (rdev && rdev->ops && rdev->ops->set_time) {
+		return rdev->ops->set_time(rdev, tm);
 	}
 
 	return VMM_EFAIL;
@@ -127,36 +127,77 @@ int rtc_device_sync_device(struct rtc_device *rdev)
 }
 VMM_EXPORT_SYMBOL(rtc_device_sync_device);
 
+void rtc_update_irq(struct rtc_device *rtc,
+		    unsigned long num, unsigned long events)
+{
+	/* TODO: To be added later */
+}
+VMM_EXPORT_SYMBOL(rtc_update_irq);
+
 static struct vmm_class rtc_class = {
 	.name = RTC_DEVICE_CLASS_NAME,
 };
 
-int rtc_device_register(struct rtc_device *rdev)
+struct rtc_device *rtc_device_register(struct vmm_device *parent,
+					const char *name,
+					const struct rtc_class_ops *ops,
+					void *priv)
 {
-	if (!(rdev && rdev->set_time && rdev->get_time)) {
-		return VMM_EFAIL;
+	int ret;
+	struct rtc_device *rdev;
+
+	if (!name || !ops || !ops->set_time || !ops->read_time) {
+		return VMM_ERR_PTR(VMM_EINVALID);
+	}
+
+	rdev = vmm_zalloc(sizeof(*rdev));
+	if (!rdev) {
+		return VMM_ERR_PTR(VMM_ENOMEM);
+	}
+
+	if (strlcpy(rdev->name, name, sizeof(rdev->name)) >=
+	    sizeof(rdev->name)) {
+		vmm_free(rdev);
+		return VMM_ERR_PTR(VMM_EOVERFLOW);
 	}
 
 	vmm_devdrv_initialize_device(&rdev->dev);
-	if (strlcpy(rdev->dev.name, rdev->name, sizeof(rdev->dev.name)) >=
+	if (strlcpy(rdev->dev.name, name, sizeof(rdev->dev.name)) >=
 	    sizeof(rdev->dev.name)) {
-		return VMM_EOVERFLOW;
+		vmm_free(rdev);
+		return VMM_ERR_PTR(VMM_EOVERFLOW);
 	}
 	rdev->dev.class = &rtc_class;
 	vmm_devdrv_set_data(&rdev->dev, rdev);
+	rdev->ops = ops;
+	rdev->priv = priv;
 
-	return vmm_devdrv_register_device(&rdev->dev);
+	ret = vmm_devdrv_register_device(&rdev->dev);
+	if (ret) {
+		vmm_free(rdev);
+		return VMM_ERR_PTR(ret);
+	}
 
+	return rdev;
 }
 VMM_EXPORT_SYMBOL(rtc_device_register);
 
 int rtc_device_unregister(struct rtc_device *rdev)
 {
+	int ret;
+
 	if (!rdev) {
-		return VMM_EFAIL;
+		return VMM_EINVALID;
 	}
 
-	return vmm_devdrv_unregister_device(&rdev->dev);
+	ret = vmm_devdrv_unregister_device(&rdev->dev);
+	if (ret) {
+		return ret;
+	}
+
+	vmm_free(rdev);
+
+	return VMM_OK;
 }
 VMM_EXPORT_SYMBOL(rtc_device_unregister);
 

@@ -21,8 +21,16 @@
 # @author Himanshu Chauhan (hschauhan@nulltrace.org)
 # @brief list of x86_64 object files.
 # */
+GCCMAJ=$(shell if [ `gcc --version | grep ^gcc | sed 's/^.* //g' | cut -f1 -d '.'`  -gt 4 ]; then echo true; fi)
+
 cpu-cflags +=-finline-functions -O0 -mcmodel=large
 cpu-cppflags +=-DCPU_TEXT_LMA=${CONFIG_VAPOOL_ALIGN_MB}
+
+ifeq ($(GCCMAJ),true)
+cpu-ldflags += -no-pie
+cpu-cflags += -no-pie
+cpu-cppflags += -no-pie
+endif
 
 cpu-objs-y+= start.o
 
@@ -46,10 +54,3 @@ cpu-objs-y+= cpu_pgtbl_helper.o
 cpu-objs-y+= cpu_mmu.o
 cpu-objs-y+= dumpstack_64.o
 cpu-objs-y+= cpu_interrupt_handlers.o
-cpu-objs-y+= arch_guest_helper.o
-cpu-objs-$(CONFIG_VEXT_AMD_SVM)+= vm/amd/amd_intercept.o
-cpu-objs-$(CONFIG_VEXT_AMD_SVM)+= vm/amd/amd_svm.o
-cpu-objs-$(CONFIG_VEXT_INTEL_VTX)+= vm/intel/intel_vmcs.o
-cpu-objs-$(CONFIG_VEXT_INTEL_VTX)+= vm/intel/intel_vmx.o
-cpu-objs-$(CONFIG_VEXT_INTEL_VTX)+= vm/intel/ivmx_helper.o
-cpu-objs-$(CONFIG_VEXT_INTEL_VTX)+= vm/intel/intel_intercept.o

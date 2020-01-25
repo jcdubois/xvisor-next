@@ -136,8 +136,10 @@ static void sdhci_reset(struct sdhci_host *host, u8 mask)
 	}
 }
 
-static void sdhci_init(struct sdhci_host *host, int soft)
+static int sdhci_init(struct mmc_host *mmc, int soft)
 {
+	struct sdhci_host *host = mmc_priv(mmc);
+
 	if (soft) {
 		sdhci_reset(host, SDHCI_RESET_CMD|SDHCI_RESET_DATA);
 	} else {
@@ -155,6 +157,8 @@ static void sdhci_init(struct sdhci_host *host, int soft)
 		/* Mask all sdhci interrupt sources */
 		sdhci_writel(host, 0x0, SDHCI_SIGNAL_ENABLE);
 	}
+
+	return 0;
 }
 
 static void sdhci_cmd_done(struct sdhci_host *host, struct mmc_cmd *cmd)
@@ -464,13 +468,16 @@ static int sdhci_set_clock(struct mmc_host *mmc, u32 clock)
 		return VMM_OK;
 	}
 
+	sdhci_writew(host, 0, SDHCI_CLOCK_CONTROL);
+
 	if (clock == 0) {
 		return VMM_OK;
 	}
 
-	sdhci_writew(host, 0, SDHCI_CLOCK_CONTROL);
+	if (host->ops.set_delay)
+		host->ops.set_delay(host);
 
-	if ((host->sdhci_version & SDHCI_SPEC_VER_MASK) >= SDHCI_SPEC_300) {
+	if (SDHCI_GET_VERSION(host) >= SDHCI_SPEC_300) {
 		/* Version 3.00 divisors must be a multiple of 2. */
 		if (mmc->f_max <= clock)
 			div = 1;
@@ -549,7 +556,7 @@ static void sdhci_set_power(struct sdhci_host *host, u16 power)
 	sdhci_writeb(host, pwr, SDHCI_POWER_CONTROL);
 }
 
-static void sdhci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
+static int sdhci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 {
 	u32 ctrl;
 	struct sdhci_host *host = mmc_priv(mmc);
@@ -566,13 +573,11 @@ static void sdhci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	ctrl = sdhci_readb(host, SDHCI_HOST_CONTROL);
 	if (ios->bus_width == 8) {
 		ctrl &= ~SDHCI_CTRL_4BITBUS;
-		if ((host->sdhci_version & SDHCI_SPEC_VER_MASK) >=
-							SDHCI_SPEC_300) {
+		if (SDHCI_GET_VERSION(host) >= SDHCI_SPEC_300) {
 			ctrl |= SDHCI_CTRL_8BITBUS;
 		}
 	} else {
-		if ((host->sdhci_version & SDHCI_SPEC_VER_MASK) >=
-							SDHCI_SPEC_300) {
+		if (SDHCI_GET_VERSION(host) >= SDHCI_SPEC_300) {
 			ctrl &= ~SDHCI_CTRL_8BITBUS;
 		}
 		if (ios->bus_width == 4) {
@@ -593,6 +598,12 @@ static void sdhci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	}
 
 	sdhci_writeb(host, ctrl, SDHCI_HOST_CONTROL);
+
+	/* If available, call the driver specific "post" set_ios() function */
+	if (host->ops.set_ios_post)
+		host->ops.set_ios_post(host);
+
+	return 0;
 }
 
 static int sdhci_get_cd(struct mmc_host *mmc)
@@ -793,39 +804,50 @@ int sdhci_add_host(struct sdhci_host *host)
 	}
 
 	host->sdhci_caps = sdhci_readl(host, SDHCI_CAPABILITIES);
+	if (SDHCI_GET_VERSION(host) >= SDHCI_SPEC_300) {
+		host->sdhci_caps_1 = sdhci_readl(host, SDHCI_CAPABILITIES_1);
+		host->clk_mul = (host->sdhci_caps_1 & SDHCI_CLOCK_MUL_MASK) >>
+				SDHCI_CLOCK_MUL_SHIFT;
+	} else {
+		host->sdhci_caps_1 = 0;
+		host->clk_mul = 0;
+	}
 
+	if (host->max_clk == 0) {
+		if (SDHCI_GET_VERSION(host) >= SDHCI_SPEC_300)
+			host->max_clk =
+				(host->sdhci_caps & SDHCI_CLOCK_V3_BASE_MASK)
+				 >> SDHCI_CLOCK_BASE_SHIFT;
+		else
+			host->max_clk =
+				(host->sdhci_caps & SDHCI_CLOCK_BASE_MASK)
+				 >> SDHCI_CLOCK_BASE_SHIFT;
+		host->max_clk *= 1000000;
+		if (host->clk_mul)
+			host->max_clk *= host->clk_mul;
+	}
+	if (host->max_clk == 0) {
+		vmm_printf("%s: Hardware doesn't specify base clock frequency\n",
+			   __func__);
+		rc = VMM_EINVALID;
+		goto free_nothing;
+	}
+	if (host->min_clk == 0) {
+		if (SDHCI_GET_VERSION(host) >= SDHCI_SPEC_300) {
+			host->min_clk = host->max_clk / SDHCI_MAX_DIV_SPEC_300;
+		} else {
+			host->min_clk = host->max_clk / SDHCI_MAX_DIV_SPEC_200;
+		}
+	}
+
+	mmc->ops.init = sdhci_init;
 	mmc->ops.send_cmd = sdhci_send_command;
 	mmc->ops.set_ios = sdhci_set_ios;
 	mmc->ops.init_card = sdhci_init_card;
 	mmc->ops.get_cd = sdhci_get_cd;
 	mmc->ops.get_wp = sdhci_get_wp;
-
-	if (host->max_clk) {
-		mmc->f_max = host->max_clk;
-	} else {
-		if ((host->sdhci_version & SDHCI_SPEC_VER_MASK) >= SDHCI_SPEC_300) {
-			mmc->f_max = (host->sdhci_caps & SDHCI_CLOCK_V3_BASE_MASK)
-					>> SDHCI_CLOCK_BASE_SHIFT;
-		} else {
-			mmc->f_max = (host->sdhci_caps & SDHCI_CLOCK_BASE_MASK)
-					>> SDHCI_CLOCK_BASE_SHIFT;
-		}
-		mmc->f_max *= 1000000;
-	}
-	if (mmc->f_max == 0) {
-		vmm_printf("%s: No base clock frequency\n", __func__);
-		rc = VMM_EINVALID;
-		goto free_nothing;
-	}
-	if (host->min_clk) {
-		mmc->f_min = host->min_clk;
-	} else {
-		if ((host->sdhci_version & SDHCI_SPEC_VER_MASK) >= SDHCI_SPEC_300) {
-			mmc->f_min = mmc->f_max / SDHCI_MAX_DIV_SPEC_300;
-		} else {
-			mmc->f_min = mmc->f_max / SDHCI_MAX_DIV_SPEC_200;
-		}
-	}
+	mmc->f_max = host->max_clk;
+	mmc->f_min = host->min_clk;
 
 	mmc->voltages = 0;
 	if (host->sdhci_caps & SDHCI_CAN_VDD_330) {
@@ -845,19 +867,51 @@ int sdhci_add_host(struct sdhci_host *host)
 	mmc->caps = MMC_CAP_MODE_HS |
 		    MMC_CAP_MODE_HS_52MHz |
 		    MMC_CAP_MODE_4BIT;
-	if (host->sdhci_caps & SDHCI_CAN_DO_8BIT) {
-		mmc->caps |= MMC_CAP_MODE_8BIT;
+
+	if (SDHCI_GET_VERSION(host) >= SDHCI_SPEC_300) {
+		if (host->sdhci_caps & SDHCI_CAN_DO_8BIT) {
+			mmc->caps |= MMC_CAP_MODE_8BIT;
+		}
+	}
+
+	if (host->quirks & SDHCI_QUIRK_NO_HISPD_BIT) {
+		mmc->caps &= ~(MMC_CAP_MODE_HS | MMC_CAP_MODE_HS_52MHz);
 	}
 
 	if (host->quirks & SDHCI_QUIRK_BROKEN_CARD_DETECTION) {
 		mmc->caps |= MMC_CAP_NEEDS_POLL;
 	}
 
-	if (host->caps) {
-		mmc->caps |= host->caps;
+	if (!(mmc->voltages & MMC_VDD_165_195) ||
+	    (host->quirks2 & SDHCI_QUIRK2_NO_1_8_V)) {
+		host->sdhci_caps_1 &= ~(SDHCI_SUPPORT_SDR104 |
+					SDHCI_SUPPORT_SDR50 |
+					SDHCI_SUPPORT_DDR50);
 	}
 
-	sdhci_init(host, 0);
+	if (host->sdhci_caps_1 & (SDHCI_SUPPORT_SDR104 |
+				  SDHCI_SUPPORT_SDR50 |
+				  SDHCI_SUPPORT_DDR50))
+		mmc->caps |= MMC_CAP_MODE_UHS_SDR12 | MMC_CAP_MODE_UHS_SDR25;
+
+	if (host->sdhci_caps_1 & SDHCI_SUPPORT_SDR104) {
+		mmc->caps |= MMC_CAP_MODE_UHS_SDR104 | MMC_CAP_MODE_UHS_SDR50;
+		/*
+		 * SD3.0: SDR104 is supported so (for eMMC) the caps2
+		 * field can be promoted to support HS200.
+		 */
+		mmc->caps |= MMC_CAP_MODE_HS200;
+	} else if (host->sdhci_caps_1 & SDHCI_SUPPORT_SDR50) {
+		mmc->caps |= MMC_CAP_MODE_UHS_SDR50;
+	}
+
+	if (host->sdhci_caps_1 & SDHCI_SUPPORT_DDR50) {
+		mmc->caps |= MMC_CAP_MODE_UHS_DDR50;
+	}
+
+	if (host->mmc_caps) {
+		mmc->caps |= host->mmc_caps;
+	}
 
 	if (host->sdhci_caps & SDHCI_CAN_DO_SDMA) {
 		/* Note: host aligned buffer must be 8-byte aligned */
@@ -896,12 +950,7 @@ int sdhci_add_host(struct sdhci_host *host)
 		host->quirks |= SDHCI_QUIRK_BROKEN_CARD_DETECTION;
 	}
 
-	rc = mmc_add_host(mmc);
-	if (rc) {
-		goto free_host_irq;
-	}
-
-	switch (host->sdhci_version & SDHCI_SPEC_VER_MASK) {
+	switch (SDHCI_GET_VERSION(host)) {
 	case SDHCI_SPEC_100:
 		ver = "v1";
 		break;
@@ -917,20 +966,24 @@ int sdhci_add_host(struct sdhci_host *host)
 	};
 
 	if ((rc = vmm_host_va2pa((virtual_addr_t)host->ioaddr, &iopaddr))) {
-		goto remove_host;
+		goto free_host_irq;
 	}
 
-	vmm_printf("%s: SDHCI controller %s at 0x%llx irq %d [%s]\n",
-		   mmc_hostname(mmc), ver,
-		   (unsigned long long)iopaddr, host->irq,
-		   (host->sdhci_caps & SDHCI_CAN_DO_SDMA) ? "DMA" : "PIO");
+	vmm_linfo(mmc_hostname(mmc),
+		  "SDHCI controller %s at 0x%llx irq %d [%s]\n",
+		  ver, (unsigned long long)iopaddr, host->irq,
+		  (host->sdhci_caps & SDHCI_CAN_DO_SDMA) ? "DMA" : "PIO");
+
+	rc = mmc_add_host(mmc);
+	if (rc) {
+		vmm_lerror(mmc_hostname(mmc),
+			   "MMC add host failed (error %d)\n", rc);
+		goto free_host_irq;
+	}
 
 	sdhci_enable_card_detection(host);
 
 	return VMM_OK;
-
-remove_host:
-	mmc_remove_host(mmc);
 
 free_host_irq:
 	if (host->irq > 0) {
