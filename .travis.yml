@@ -9,10 +9,11 @@ script: tools/scripts/makeall
 
 before_install:
   - sudo apt-get -q update
-  - sudo apt-get install -y gcc-8-aarch64-linux-gnu
-  - sudo apt-get install -y gcc-8-arm-linux-gnueabi
-  - sudo apt-get install -y gcc-8-riscv64-linux-gnu
-  - sudo apt-get install -y gcc-8
+  - sudo apt-get install -y gcc-aarch64-linux-gnu
+  - sudo apt-get install -y gcc-arm-linux-gnueabi
+  - sudo apt-get install -y gcc-arm-none-eabi
+  - sudo apt-get install -y gcc-riscv64-linux-gnu
+  - sudo apt-get install -y gcc
 
 notifications:
   email:
