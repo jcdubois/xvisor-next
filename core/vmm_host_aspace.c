@@ -6,12 +6,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
@@ -34,6 +34,16 @@
 #include <arch_devtree.h>
 #include <libs/stringlib.h>
 #include <libs/rbtree_augmented.h>
+
+#define VAPOOL_SIZE	(CONFIG_VAPOOL_SIZE_MB << 20)
+
+#if ((VAPOOL_SIZE / VMM_PAGE_SIZE) < CONFIG_MEMMAP_HASH_SIZE_FACTOR) || \
+    (CONFIG_MEMMAP_HASH_SIZE_FACTOR < 1)
+#error "Invalid value of CONFIG_MEMMAP_HASH_SIZE_FACTOR"
+#else
+#define MEMMAP_HASH_SIZE	\
+((VAPOOL_SIZE / VMM_PAGE_SIZE) / CONFIG_MEMMAP_HASH_SIZE_FACTOR)
+#endif
 
 static virtual_addr_t host_mem_rw_va[CONFIG_CPU_COUNT];
 
@@ -75,6 +85,26 @@ static struct host_mhash_entry *__host_mhash_alloc(void)
 }
 
 /* NOTE: Must be called with read/write lock held on host_mhash.lock */
+static u32 __host_mhash_total_count(void)
+{
+	return host_mhash.count;
+}
+
+/* NOTE: Must be called with read/write lock held on host_mhash.lock */
+static u32 __host_mhash_free_count(void)
+{
+	u32 i, ret = 0;
+
+	for (i = 0; i < host_mhash.count; i++) {
+		if (!host_mhash.entry[i].ref_count) {
+			ret++;
+		}
+	}
+
+	return ret;
+}
+
+/* NOTE: Must be called with read/write lock held on host_mhash.lock */
 static struct host_mhash_entry *__host_mhash_find(physical_addr_t pa)
 {
 	struct rb_node *n;
@@ -96,6 +126,30 @@ static struct host_mhash_entry *__host_mhash_find(physical_addr_t pa)
 			vmm_panic("%s: can't find physical address\n", __func__);
 		}
 	}
+
+	return ret;
+}
+
+static u32 host_mhash_total_count(void)
+{
+	u32 ret;
+	irq_flags_t flags;
+
+	vmm_read_lock_irqsave(&host_mhash.lock, flags);
+	ret = __host_mhash_total_count();
+	vmm_read_unlock_irqrestore(&host_mhash.lock, flags);
+
+	return ret;
+}
+
+static u32 host_mhash_free_count(void)
+{
+	u32 ret;
+	irq_flags_t flags;
+
+	vmm_read_lock_irqsave(&host_mhash.lock, flags);
+	ret = __host_mhash_free_count();
+	vmm_read_unlock_irqrestore(&host_mhash.lock, flags);
 
 	return ret;
 }
@@ -241,10 +295,10 @@ static int host_mhash_pa2va(physical_addr_t pa,
 	e = __host_mhash_find(pa);
 	if (e) {
 		if (va) {
-			*va = e->va + (e->pa - pa);
+			*va = e->va + (pa - e->pa);
 		}
 		if (sz) {
-			*sz = e->sz - (e->pa - pa);
+			*sz = e->sz - (pa - e->pa);
 		}
 		if (mem_flags) {
 			*mem_flags = e->mem_flags;
@@ -259,7 +313,7 @@ static int host_mhash_pa2va(physical_addr_t pa,
 
 static virtual_size_t host_mhash_estimate_hksize(void)
 {
-	return sizeof(struct host_mhash_entry) * CONFIG_MEMMAP_HASH_SIZE;
+	return sizeof(struct host_mhash_entry) * MEMMAP_HASH_SIZE;
 }
 
 static int host_mhash_init(virtual_addr_t mhash_start,
@@ -290,16 +344,26 @@ static int host_mhash_init(virtual_addr_t mhash_start,
 
 static virtual_addr_t host_memmap(physical_addr_t pa,
 				  virtual_size_t sz,
-				  u32 mem_flags)
+				  u32 mem_flags,
+				  bool use_hugepage)
 {
-	int rc, ite;
+	int rc, page_shift;
+	virtual_addr_t ite, page_size, page_mask;
 	virtual_addr_t va = 0;
 	virtual_addr_t tsz = 0;
 	physical_addr_t tpa = 0;
 	u32 tmem_flags = 0;
 
-	sz = VMM_ROUNDUP2_PAGE_SIZE(sz);
-	tpa = pa & ~VMM_PAGE_MASK;
+	if (use_hugepage) {
+		page_shift = arch_cpu_aspace_hugepage_log2size();
+	} else {
+		page_shift = VMM_PAGE_SHIFT;
+	}
+	page_size = (1 << page_shift);
+	page_mask = (page_size - 1);
+
+	sz = roundup2_order_size(sz, page_shift);
+	tpa = pa & ~page_mask;
 
 	rc = host_mhash_pa2va(tpa, &va, &tsz, &tmem_flags);
 	if (rc == VMM_OK) {
@@ -316,7 +380,7 @@ static virtual_addr_t host_memmap(physical_addr_t pa,
 			vmm_panic("%s: size mismatch\n", __func__);
 		}
 
-		va = va & ~VMM_PAGE_MASK;
+		va = va & ~page_mask;
 	} else if (rc != VMM_ENOTAVAIL) {
 		/* Something went wrong. */
 		vmm_panic("%s: unhandled error=%d\n", __func__, rc);
@@ -327,10 +391,18 @@ static virtual_addr_t host_memmap(physical_addr_t pa,
 				  __func__, rc);
 		}
 
-		for (ite = 0; ite < (sz >> VMM_PAGE_SHIFT); ite++) {
-			rc = arch_cpu_aspace_map(va + ite * VMM_PAGE_SIZE,
-						tpa + ite * VMM_PAGE_SIZE,
-						mem_flags);
+		/* Sanity check on VA */
+		if (va & page_mask) {
+			/* Don't have space */
+			vmm_panic("%s: vapool alloc returned VA not aligned "
+				  "to page_size\n", __func__);
+		}
+
+		for (ite = 0; ite < (sz >> page_shift); ite++) {
+			rc = arch_cpu_aspace_map(va + ite * page_size,
+						 page_size,
+						 tpa + ite * page_size,
+						 mem_flags);
 			if (rc) {
 				/* We were not able to map physical address */
 				vmm_panic("%s: failed to create VA->PA "
@@ -346,16 +418,27 @@ static virtual_addr_t host_memmap(physical_addr_t pa,
 			  __func__, rc);
 	}
 
-	return va + (pa & VMM_PAGE_MASK);
+	return va + (pa & page_mask);
 }
 
-static int host_memunmap(virtual_addr_t va, virtual_size_t sz)
+static int host_memunmap(virtual_addr_t va,
+			 virtual_size_t sz,
+			 bool use_hugepage)
 {
-	int rc, ite;
+	int rc, page_shift;
+	virtual_addr_t ite, page_size, page_mask;
 	physical_addr_t pa = 0x0;
 
-	sz = VMM_ROUNDUP2_PAGE_SIZE(sz);
-	va &= ~VMM_PAGE_MASK;
+	if (use_hugepage) {
+		page_shift = arch_cpu_aspace_hugepage_log2size();
+	} else {
+		page_shift = VMM_PAGE_SHIFT;
+	}
+	page_size = (1 << page_shift);
+	page_mask = (page_size - 1);
+
+	sz = roundup2_order_size(sz, page_shift);
+	va &= ~page_mask;
 
 	if ((rc = arch_cpu_aspace_va2pa(va, &pa))) {
 		return rc;
@@ -368,8 +451,8 @@ static int host_memunmap(virtual_addr_t va, virtual_size_t sz)
 		vmm_panic("%s: unhandled error=%d\n", __func__, rc);
 	}
 
-	for (ite = 0; ite < (sz >> VMM_PAGE_SHIFT); ite++) {
-		rc = arch_cpu_aspace_unmap(va + ite * VMM_PAGE_SIZE);
+	for (ite = 0; ite < (sz >> page_shift); ite++) {
+		rc = arch_cpu_aspace_unmap(va + ite * page_size);
 		if (rc) {
 			return rc;
 		}
@@ -383,11 +466,84 @@ static int host_memunmap(virtual_addr_t va, virtual_size_t sz)
 	return VMM_OK;
 }
 
+static virtual_addr_t host_alloc_aligned_pages(u32 page_count,
+					       u32 align_order,
+					       u32 mem_flags,
+					       bool use_hugepage)
+{
+	u32 page_shift;
+	virtual_addr_t page_size;
+	physical_addr_t pa = 0x0;
+
+	if (use_hugepage) {
+		page_shift = arch_cpu_aspace_hugepage_log2size();
+	} else {
+		page_shift = VMM_PAGE_SHIFT;
+	}
+	page_size = (1 << page_shift);
+
+	if (align_order < page_shift)
+		align_order = page_shift;
+
+	if (!vmm_host_ram_alloc(&pa,
+				page_count * page_size,
+				align_order)) {
+		return 0x0;
+	}
+
+	return host_memmap(pa,
+			   page_count * page_size,
+			   mem_flags,
+			   use_hugepage);
+}
+
+static int host_free_pages(virtual_addr_t page_va,
+			   u32 page_count,
+			   bool use_hugepage)
+{
+	int rc = VMM_OK;
+	u32 page_shift;
+	virtual_addr_t page_size, page_mask;
+	physical_addr_t pa = 0x0;
+
+	if (use_hugepage) {
+		page_shift = arch_cpu_aspace_hugepage_log2size();
+	} else {
+		page_shift = VMM_PAGE_SHIFT;
+	}
+	page_size = (1 << page_shift);
+	page_mask = (page_size - 1);
+
+	page_va &= ~page_mask;
+
+	if ((rc = arch_cpu_aspace_va2pa(page_va, &pa))) {
+		return rc;
+	}
+
+	if ((rc = host_memunmap(page_va,
+				page_count * page_size,
+				use_hugepage))) {
+		return rc;
+	}
+
+	return vmm_host_ram_free(pa, page_count * page_size);
+}
+
+u32 vmm_host_memmap_hash_total_count(void)
+{
+	return host_mhash_total_count();
+}
+
+u32 vmm_host_memmap_hash_free_count(void)
+{
+	return host_mhash_free_count();
+}
+
 virtual_addr_t vmm_host_memmap(physical_addr_t pa,
 			       virtual_size_t sz,
 			       u32 mem_flags)
 {
-	return host_memmap(pa, sz, mem_flags);
+	return host_memmap(pa, sz, mem_flags, false);
 }
 
 int vmm_host_memunmap(virtual_addr_t va)
@@ -401,48 +557,47 @@ int vmm_host_memunmap(virtual_addr_t va)
 		return rc;
 	}
 
-	return host_memunmap(alloc_va, alloc_sz);
+	return host_memunmap(alloc_va, alloc_sz, false);
+}
+
+u32 vmm_host_hugepage_shift(void)
+{
+	return arch_cpu_aspace_hugepage_log2size();
+}
+
+virtual_size_t vmm_host_hugepage_size(void)
+{
+	return ((virtual_size_t)1) << arch_cpu_aspace_hugepage_log2size();
+}
+
+virtual_addr_t vmm_host_alloc_hugepages(u32 page_count, u32 mem_flags)
+{
+	return host_alloc_aligned_pages(page_count,
+					arch_cpu_aspace_hugepage_log2size(),
+					mem_flags, true);
+}
+
+int vmm_host_free_hugepages(virtual_addr_t page_va, u32 page_count)
+{
+	return host_free_pages(page_va, page_count, true);
 }
 
 virtual_addr_t vmm_host_alloc_aligned_pages(u32 page_count,
 					    u32 align_order, u32 mem_flags)
 {
-	physical_addr_t pa = 0x0;
-
-	if (align_order < VMM_PAGE_SHIFT)
-		align_order = VMM_PAGE_SHIFT;
-
-	if (!vmm_host_ram_alloc(&pa,
-				page_count * VMM_PAGE_SIZE,
-				align_order)) {
-		return 0x0;
-	}
-
-	return vmm_host_memmap(pa, page_count * VMM_PAGE_SIZE, mem_flags);
+	return host_alloc_aligned_pages(page_count,
+					align_order, mem_flags, false);
 }
 
 virtual_addr_t vmm_host_alloc_pages(u32 page_count, u32 mem_flags)
 {
-	return vmm_host_alloc_aligned_pages(page_count,
-					    VMM_PAGE_SHIFT, mem_flags);
+	return host_alloc_aligned_pages(page_count,
+					VMM_PAGE_SHIFT, mem_flags, false);
 }
 
 int vmm_host_free_pages(virtual_addr_t page_va, u32 page_count)
 {
-	int rc = VMM_OK;
-	physical_addr_t pa = 0x0;
-
-	page_va &= ~VMM_PAGE_MASK;
-
-	if ((rc = arch_cpu_aspace_va2pa(page_va, &pa))) {
-		return rc;
-	}
-
-	if ((rc = host_memunmap(page_va, page_count * VMM_PAGE_SIZE))) {
-		return rc;
-	}
-
-	return vmm_host_ram_free(pa, page_count * VMM_PAGE_SIZE);
+	return host_free_pages(page_va, page_count, false);
 }
 
 int vmm_host_va2pa(virtual_addr_t va, physical_addr_t *pa)
@@ -450,12 +605,12 @@ int vmm_host_va2pa(virtual_addr_t va, physical_addr_t *pa)
 	int rc = VMM_OK;
 	physical_addr_t _pa = 0x0;
 
-	if ((rc = arch_cpu_aspace_va2pa(va & ~VMM_PAGE_MASK, &_pa))) {
+	if ((rc = arch_cpu_aspace_va2pa(va, &_pa))) {
 		return rc;
 	}
 
 	if (pa) {
-		*pa = _pa | (va & VMM_PAGE_MASK);
+		*pa = _pa;
 	}
 
 	return VMM_OK;
@@ -466,13 +621,13 @@ int vmm_host_pa2va(physical_addr_t pa, virtual_addr_t *va)
 	int rc = VMM_OK;
 	virtual_addr_t _va = 0x0;
 
-	rc = host_mhash_pa2va(pa & ~VMM_PAGE_MASK, &_va, NULL, NULL);
+	rc = host_mhash_pa2va(pa, &_va, NULL, NULL);
 	if (rc) {
 		return rc;
 	}
 
 	if (va) {
-		*va = _va | (pa & VMM_PAGE_MASK);
+		*va = _va;
 	}
 
 	return VMM_OK;
@@ -499,7 +654,8 @@ u32 vmm_host_memory_read(physical_addr_t hpa,
 		arch_cpu_irq_save(flags);
 
 #if !defined(ARCH_HAS_MEMORY_READWRITE)
-		rc = arch_cpu_aspace_map(tmp_va, hpa & ~VMM_PAGE_MASK,
+		rc = arch_cpu_aspace_map(tmp_va, VMM_PAGE_SIZE,
+					 hpa & ~VMM_PAGE_MASK,
 					 (cacheable) ?
 					 VMM_MEMORY_FLAGS_NORMAL :
 					 VMM_MEMORY_FLAGS_NORMAL_NOCACHE);
@@ -552,7 +708,8 @@ u32 vmm_host_memory_write(physical_addr_t hpa,
 		arch_cpu_irq_save(flags);
 
 #if !defined(ARCH_HAS_MEMORY_READWRITE)
-		rc = arch_cpu_aspace_map(tmp_va, hpa & ~VMM_PAGE_MASK,
+		rc = arch_cpu_aspace_map(tmp_va, VMM_PAGE_SIZE,
+					 hpa & ~VMM_PAGE_MASK,
 					 (cacheable) ?
 					 VMM_MEMORY_FLAGS_NORMAL :
 					 VMM_MEMORY_FLAGS_NORMAL_NOCACHE);
@@ -630,10 +787,33 @@ u32 vmm_host_free_initmem(void)
 	return (init_size >> VMM_PAGE_SHIFT) * VMM_PAGE_SIZE / 1024;
 }
 
-int __cpuinit vmm_host_aspace_init(void)
+static int __cpuinit host_aspace_init_secondary(void)
+{
+	int rc;
+
+	/* For Non-Boot CPU just call arch code and return */
+	rc = arch_cpu_aspace_secondary_init();
+	if (rc) {
+		return rc;
+	}
+
+#if defined(ARCH_HAS_MEMORY_READWRITE)
+	/* Initialize memory read/write for Non-Boot CPU */
+	rc = arch_cpu_aspace_memory_rwinit(
+			host_mem_rw_va[vmm_smp_processor_id()]);
+	if (rc) {
+		return rc;
+	}
+#endif
+
+	return VMM_OK;
+}
+
+static int __init host_aspace_init_primary(void)
 {
 	int rc, cpu, bank_found = 0;
 	u32 resv, resv_count, bank, bank_count = 0x0;
+	u64 ram_end;
 	physical_addr_t ram_start, core_resv_pa = 0x0, arch_resv_pa = 0x0;
 	physical_size_t ram_size;
 	virtual_addr_t vapool_start, vapool_hkstart, ram_hkstart, mhash_hkstart;
@@ -642,28 +822,9 @@ int __cpuinit vmm_host_aspace_init(void)
 	virtual_addr_t core_resv_va = 0x0, arch_resv_va = 0x0;
 	virtual_size_t core_resv_sz = 0x0, arch_resv_sz = 0x0;
 
-	/* For Non-Boot CPU just call arch code and return */
-	if (!vmm_smp_is_bootcpu()) {
-		rc = arch_cpu_aspace_secondary_init();
-		if (rc) {
-			return rc;
-		}
-
-#if defined(ARCH_HAS_MEMORY_READWRITE)
-		/* Initialize memory read/write for Non-Boot CPU */
-		rc = arch_cpu_aspace_memory_rwinit(
-				host_mem_rw_va[vmm_smp_processor_id()]);
-		if (rc) {
-			return rc;
-		}
-#endif
-
-		return VMM_OK;
-	}
-
 	/* Determine VAPOOL start and size */
 	vapool_start = arch_code_vaddr_start();
-	vapool_size = (CONFIG_VAPOOL_SIZE_MB << 20);
+	vapool_size = VAPOOL_SIZE;
 
 	/* Determine VAPOOL house-keeping size based on VAPOOL size */
 	vapool_hksize = vmm_host_vapool_estimate_hksize(vapool_size);
@@ -695,8 +856,10 @@ int __cpuinit vmm_host_aspace_init(void)
 		if (ram_size & VMM_PAGE_MASK) {
 			return VMM_EINVALID;
 		}
+		/* Ensure this doesn't overflow for 32-bit */
+		ram_end = (u64)ram_start + (u64)ram_size;
 		if ((ram_start <= arch_code_paddr_start()) &&
-		    (arch_code_paddr_start() < (ram_start + ram_size))) {
+		    (arch_code_paddr_start() < ram_end)) {
 			bank_found = 1;
 			break;
 		}
@@ -770,21 +933,56 @@ int __cpuinit vmm_host_aspace_init(void)
 		return rc;
 	}
 
-	/* Reserve all pages covering code space, core reserved space,
-	 * and arch reserved space in VAPOOL & RAM.
-	 */
+	/* Reserve RAM and MEMAP HASH for code area */
+	vmm_init_printf("ram_reserve: phys=0x%"PRIPADDR" size=%"PRISIZE"\n",
+			arch_code_paddr_start(), arch_code_size());
+	if ((rc = vmm_host_ram_reserve(arch_code_paddr_start(),
+				       arch_code_size()))) {
+		return rc;
+	}
+	if ((rc = host_mhash_add(arch_code_paddr_start(),
+				 arch_code_vaddr_start(),
+				 arch_code_size(),
+				 VMM_MEMORY_FLAGS_NORMAL))) {
+		return rc;
+	}
+
+	/* Reserve RAM and MEMAP HASH for core reserved area */
+	vmm_init_printf("ram_reserve: phys=0x%"PRIPADDR" size=%"PRISIZE"\n",
+			core_resv_pa, core_resv_sz);
+	if ((rc = vmm_host_ram_reserve(core_resv_pa,
+				       core_resv_sz))) {
+		return rc;
+	}
+	if ((rc = host_mhash_add(core_resv_pa,
+				 core_resv_va,
+				 core_resv_sz,
+				 VMM_MEMORY_FLAGS_NORMAL))) {
+		return rc;
+	}
+
+	/* Reserve RAM and MEMAP HASH for arch reserved area */
+	vmm_init_printf("ram_reserve: phys=0x%"PRIPADDR" size=%"PRISIZE"\n",
+			arch_resv_pa, arch_resv_sz);
+	if ((rc = vmm_host_ram_reserve(arch_resv_pa,
+				       arch_resv_sz))) {
+		return rc;
+	}
+	if ((rc = host_mhash_add(arch_resv_pa,
+				 arch_resv_va,
+				 arch_resv_sz,
+				 VMM_MEMORY_FLAGS_NORMAL))) {
+		return rc;
+	}
+
+	/* Reserve VAPOOL for code, core reserved, and arch reserved areas */
 	if (arch_code_vaddr_start() < core_resv_va) {
+		core_resv_sz += (core_resv_va - arch_code_vaddr_start());
 		core_resv_va = arch_code_vaddr_start();
 	}
 	if ((arch_resv_sz > 0) && (arch_resv_va < core_resv_va)) {
+		core_resv_sz += (core_resv_va - arch_resv_va);
 		core_resv_va = arch_resv_va;
-	}
-	if (arch_code_paddr_start() < core_resv_pa) {
-		core_resv_pa = arch_code_paddr_start();
-	}
-	if ((arch_resv_sz > 0) &&
-	    (arch_resv_pa < core_resv_pa)) {
-		core_resv_pa = arch_resv_pa;
 	}
 	if ((core_resv_va + core_resv_sz) <
 			(arch_code_vaddr_start() + arch_code_size())) {
@@ -795,18 +993,10 @@ int __cpuinit vmm_host_aspace_init(void)
 	    ((core_resv_va + core_resv_sz) < (arch_resv_va + arch_resv_sz))) {
 		core_resv_sz = (arch_resv_va + arch_resv_sz) - core_resv_va;
 	}
+	vmm_init_printf("vapool_reserve: virt=0x%"PRIADDR" size=%"PRISIZE"\n",
+			core_resv_va, core_resv_sz);
 	if ((rc = vmm_host_vapool_reserve(core_resv_va,
 					  core_resv_sz))) {
-		return rc;
-	}
-	if ((rc = vmm_host_ram_reserve(core_resv_pa,
-				       core_resv_sz))) {
-		return rc;
-	}
-	if ((rc = host_mhash_add(core_resv_pa,
-				 core_resv_va,
-				 core_resv_sz,
-				 VMM_MEMORY_FLAGS_NORMAL))) {
 		return rc;
 	}
 
@@ -828,6 +1018,8 @@ int __cpuinit vmm_host_aspace_init(void)
 			ram_start -= ram_start & VMM_PAGE_MASK;
 		}
 		ram_size &= ~VMM_PAGE_MASK;
+		vmm_init_printf("ram_reserve: phys=0x%"PRIPADDR
+				" size=%"PRIPSIZE"\n", ram_start, ram_size);
 		if ((rc = vmm_host_ram_reserve(ram_start, ram_size))) {
 			return rc;
 		}
@@ -852,4 +1044,13 @@ int __cpuinit vmm_host_aspace_init(void)
 #endif
 
 	return VMM_OK;
+}
+
+int __cpuinit vmm_host_aspace_init(void)
+{
+	if (!vmm_smp_is_bootcpu()) {
+		return host_aspace_init_secondary();
+	}
+
+	return host_aspace_init_primary();
 }

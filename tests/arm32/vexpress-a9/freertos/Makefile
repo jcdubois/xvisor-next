@@ -30,7 +30,8 @@ basedir  = ../../../..
 builddir = $(basedir)/build
 
 srcdir          = $(basedir)/tests/arm32/vexpress-a9/freertos
-common_srcdir   = $(srcdir)/../../common/basic
+common_srcdir   = $(srcdir)/../../../common/basic
+common_arch_srcdir   = $(srcdir)/../../common/basic
 freertos_srcdir = $(srcdir)/FreeRTOS/Source
 
 objdir          = $(patsubst $(basedir)/%,$(builddir)/%, $(srcdir))
@@ -38,7 +39,6 @@ objdir          = $(patsubst $(basedir)/%,$(builddir)/%, $(srcdir))
 # board features
 BOARD_SMP = y
 BOARD_SECURE_EXTN = n
-BOARD_FDT_SUPPORT = n
 
 BOARD_TEXT_START     = 0x48000000
 BOARD_USR_STACK_SIZE = 16384
@@ -54,11 +54,15 @@ FREERTOS_GLOBS = $(addprefix $(freertos_srcdir)/, *.c)
 FREERTOS_SRCS = $(wildcard $(FREERTOS_GLOBS)) $(FREERTOS_HEAP_IMPL)
 
 # sources from the common firmware directory (relative to $common_srcdir)
-COMMON_SRCS = arm_string.c arm_math.c arm_stdio.c arm_irq.c pic/gic.c	\
-              timer/sp804.c serial/pl01x.c arm_cache_v7.S sys/vminfo.c
+COMMON_SRCS = basic_irq.c basic_stdio.c basic_string.c pic/gic.c	\
+              serial/pl01x.c sys/vminfo.c timer/sp804.c \
+              libfdt/fdt.c libfdt/fdt_ro.c libfdt/fdt_rw.o \
+              libfdt/fdt_strerror.c libfdt/fdt_support.c \
+              libfdt/fdt_sw.c libfdt/fdt_wip.c
+COMMON_ARCH_SRCS = arch_math.c arch_irq.c arch_cache_v7.S
 
 # FreeRTOS specific glue and application source (relative to $srcdir)
-OTHER_SRCS = port/port.c port/portASM.S ../basic/arm_board.c	\
+OTHER_SRCS = port/port.c port/portASM.S ../basic/arch_board.c	\
              arm_entry_v7.S glue.c main.c
 
 CC	= $(CROSS_COMPILE)gcc
@@ -75,9 +79,9 @@ CPATCH32   = $(builddir)/tools/cpatch/cpatch32
 
 # --------- compiler/linker flags
 
-LINK_SCRIPT = $(common_srcdir)/firmware.ld
+LINK_SCRIPT = $(common_arch_srcdir)/firmware.ld
 
-CPPFLAGS = -I$(srcdir)/../basic -I$(common_srcdir)			\
+CPPFLAGS = -I$(srcdir)/../basic -I$(common_srcdir) -I$(common_arch_srcdir) \
            -I$(freertos_srcdir)/include -I$(srcdir) -I$(srcdir)/port	\
            -DTEXT_START=$(BOARD_TEXT_START)				\
            -DUSR_STACK_SIZE=$(BOARD_USR_STACK_SIZE)
@@ -88,11 +92,8 @@ endif
 ifeq ($(BOARD_SECURE_EXTN),y)
 CPPFLAGS += -DARM_SECURE_EXTN_IMPLEMENTED
 endif
-ifeq ($(BOARD_FDT_SUPPORT),y)
-CPPFLAGS += -DBOARD_FDT_SUPPORT
-endif
 
-CFLAGS  = -mcpu=cortex-a9 -march=armv7-a -Wall -Werror  \
+CFLAGS  = -mtune=cortex-a9 -march=armv7-a -Wall -Werror  \
           -nostdlib -msoft-float -marm
 ASFLAGS = -D__ASSEMBLY__ $(CFLAGS)
 LDFLAGS = -Wl,-T$(LINK_SCRIPT_GEN) -nostdlib -Wl,--build-id=none
@@ -107,6 +108,7 @@ TARGETS      = $(BIN_TARGETS) $(BIN_TARGETS:%.bin=%.elf)
 # assemble final list of source and object files
 SRCS = $(sort $(FREERTOS_SRCS)                              \
               $(addprefix $(common_srcdir)/,$(COMMON_SRCS)) \
+              $(addprefix $(common_arch_srcdir)/,$(COMMON_ARCH_SRCS)) \
               $(addprefix $(srcdir)/,$(OTHER_SRCS)))
 OBJS = $(patsubst $(basedir)/%,$(builddir)/%.o,$(basename $(SRCS)))
 

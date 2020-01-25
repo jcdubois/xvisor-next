@@ -6,12 +6,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
@@ -145,9 +145,9 @@ bool vmm_host_vapool_isvalid(virtual_addr_t addr)
 	return FALSE;
 }
 
-virtual_size_t vmm_host_vapool_estimate_hksize(virtual_size_t size)
+virtual_size_t __init vmm_host_vapool_estimate_hksize(virtual_size_t size)
 {
-	/* VAPOOL House-Keeping Size = (Total VAPOOL Size / 256); 
+	/* VAPOOL House-Keeping Size = (Total VAPOOL Size / 256);
 	 * 12MB VAPOOL   => 48KB House-Keeping
 	 * 16MB VAPOOL   => 64KB House-Keeping
 	 * 32MB VAPOOL   => 128KB House-Keeping
@@ -189,14 +189,22 @@ int vmm_host_vapool_print_state(struct vmm_chardev *cdev)
 }
 
 int __init vmm_host_vapool_init(virtual_addr_t base,
-				virtual_size_t size, 
+				virtual_size_t size,
 				virtual_addr_t hkbase)
 {
 	int rc;
+	virtual_size_t hksize;
+
+	vmm_init_printf("vapool: base=0x%"PRIADDR" size=%"PRISIZE"\n",
+			base, size);
 
 	if ((hkbase < base) || ((base + size) <= hkbase)) {
 		return VMM_EFAIL;
 	}
+	hksize = vmm_host_vapool_estimate_hksize(size);
+
+	vmm_init_printf("vapool: hkbase=0x%"PRIADDR" hksize=%"PRISIZE"\n",
+			hkbase, hksize);
 
 	vpctrl.vapool_start = base;
 	vpctrl.vapool_size = size;
@@ -204,8 +212,7 @@ int __init vmm_host_vapool_init(virtual_addr_t base,
 	vpctrl.vapool_size &= ~VMM_PAGE_MASK;
 	vpctrl.vapool_page_count = vpctrl.vapool_size >> VMM_PAGE_SHIFT;
 
-	rc = buddy_allocator_init(&vpctrl.ba, (void *)hkbase,
-				  vmm_host_vapool_estimate_hksize(size),
+	rc = buddy_allocator_init(&vpctrl.ba, (void *)hkbase, hksize,
 				  base, size, VAPOOL_MIN_BIN, VAPOOL_MAX_BIN);
 	if (rc) {
 		return rc;
@@ -213,4 +220,3 @@ int __init vmm_host_vapool_init(virtual_addr_t base,
 
 	return VMM_OK;
 }
-

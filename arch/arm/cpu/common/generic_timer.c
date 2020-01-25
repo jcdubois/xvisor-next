@@ -23,6 +23,8 @@
 
 #include <vmm_error.h>
 #include <vmm_heap.h>
+#include <vmm_smp.h>
+#include <vmm_cpuhp.h>
 #include <vmm_stdio.h>
 #include <vmm_devtree.h>
 #include <vmm_host_irq.h>
@@ -30,7 +32,6 @@
 #include <vmm_clocksource.h>
 #include <vmm_host_aspace.h>
 #include <vmm_scheduler.h>
-#include <vmm_smp.h>
 #include <vmm_devemu.h>
 #include <generic_timer.h>
 #include <cpu_generic_timer.h>
@@ -62,14 +63,14 @@ static void generic_timer_get_freq(struct vmm_devtree_node *node)
 	if (generic_timer_hz == 0) {
 		rc = vmm_devtree_clock_frequency(node, &generic_timer_hz);
 		if (rc) {
-			/* Use preconfigured counter frequency 
-			 * in absence of dts node 
+			/* Use preconfigured counter frequency
+			 * in absence of dts node
 			 */
-			generic_timer_hz = 
+			generic_timer_hz =
 				generic_timer_reg_read(GENERIC_TIMER_REG_FREQ);
 		} else {
 			if (generic_timer_freq_writeable()) {
-				/* Program the counter frequency 
+				/* Program the counter frequency
 				 * as per the dts node
 				 */
 				generic_timer_reg_write(GENERIC_TIMER_REG_FREQ,
@@ -102,6 +103,7 @@ static int __init generic_timer_clocksource_init(struct vmm_devtree_node *node)
 	cs->rating = 400;
 	cs->read = &generic_counter_read;
 	cs->mask = VMM_CLOCKSOURCE_MASK(56);
+	cs->freq = generic_timer_hz;
 	vmm_clocks_calc_mult_shift(&cs->mult, &cs->shift,
 				   generic_timer_hz, VMM_NSEC_PER_SEC, 10);
 	generic_timer_mult = cs->mult;
@@ -135,6 +137,7 @@ static void generic_timer_stop(void)
 	unsigned long ctrl;
 
 	ctrl = generic_timer_reg_read(GENERIC_TIMER_REG_HYP_CTRL);
+	ctrl |= GENERIC_TIMER_CTRL_IT_MASK;
 	ctrl &= ~GENERIC_TIMER_CTRL_ENABLE;
 	generic_timer_reg_write(GENERIC_TIMER_REG_HYP_CTRL, ctrl);
 }
@@ -180,16 +183,12 @@ static void generic_phys_irq_inject(struct vmm_vcpu *vcpu,
 		return;
 	}
 
-	rc = vmm_devemu_emulate_percpu_irq(vcpu->guest, pirq, vcpu->subid, 0);
+	rc = vmm_devemu_emulate_percpu_irq2(vcpu->guest, pirq,
+					    vcpu->subid, 0, 1);
 	if (rc) {
-		vmm_printf("%s: Emulate VCPU=%s irq=%d level=0 failed\n",
-			   __func__, vcpu->name, pirq);
-	}
-
-	rc = vmm_devemu_emulate_percpu_irq(vcpu->guest, pirq, vcpu->subid, 1);
-	if (rc) {
-		vmm_printf("%s: Emulate VCPU=%s irq=%d level=1 failed\n",
-			   __func__, vcpu->name, pirq);
+		vmm_printf("%s: Emulate VCPU=%s irq=%d "
+			   "level0=0 level1=1 failed (error %d)\n",
+			   __func__, vcpu->name, pirq, rc);
 	}
 }
 
@@ -247,16 +246,12 @@ static void generic_virt_irq_inject(struct vmm_vcpu *vcpu,
 		return;
 	}
 
-	rc = vmm_devemu_emulate_percpu_irq(vcpu->guest, virq, vcpu->subid, 0);
+	rc = vmm_devemu_emulate_percpu_irq2(vcpu->guest, virq,
+					    vcpu->subid, 0, 1);
 	if (rc) {
-		vmm_printf("%s: Emulate VCPU=%s irq=%d level=0 failed\n",
-			   __func__, vcpu->name, virq);
-	}
-
-	rc = vmm_devemu_emulate_percpu_irq(vcpu->guest, virq, vcpu->subid, 1);
-	if (rc) {
-		vmm_printf("%s: Emulate VCPU=%s irq=%d level=1 failed\n",
-			   __func__, vcpu->name, virq);
+		vmm_printf("%s: Emulate VCPU=%s irq=%d "
+			   "level0=0 level1=1 failed (error %d)\n",
+			   __func__, vcpu->name, virq, rc);
 	}
 }
 
@@ -301,44 +296,13 @@ static vmm_irq_return_t generic_virt_timer_handler(int irq, void *dev)
 	return VMM_IRQ_HANDLED;
 }
 
-static int __cpuinit generic_timer_clockchip_init(struct vmm_devtree_node *node)
+static u32 timer_irq[4], timer_num_irqs;
+
+static int generic_timer_startup(struct vmm_cpuhp_notify *cpuhp, u32 cpu)
 {
 	int rc;
-	u32 irq[4], num_irqs, val;
+	u32 val;
 	struct vmm_clockchip *cc;
-
-	/* Get and Check generic timer frequency */
-	generic_timer_get_freq(node);
-	if (generic_timer_hz == 0) {
-		return VMM_EFAIL;
-	}
-
-	/* Get hypervisor timer irq number */
-	irq[GENERIC_HYPERVISOR_TIMER] = vmm_devtree_irq_parse_map(node,
-						GENERIC_HYPERVISOR_TIMER);
-	if (!irq[GENERIC_HYPERVISOR_TIMER]) {
-		return VMM_ENODEV;
-	}
-
-	/* Get physical timer irq number */
-	irq[GENERIC_PHYSICAL_TIMER] = vmm_devtree_irq_parse_map(node,
-						GENERIC_PHYSICAL_TIMER);
-	if (!irq[GENERIC_PHYSICAL_TIMER]) {
-		return VMM_ENODEV;
-	}
-
-	/* Get virtual timer irq number */
-	irq[GENERIC_VIRTUAL_TIMER] = vmm_devtree_irq_parse_map(node,
-						GENERIC_VIRTUAL_TIMER);
-	if (!irq[GENERIC_VIRTUAL_TIMER]) {
-		return VMM_ENODEV;
-	}
-
-	/* Number of generic timer irqs */
-	num_irqs = vmm_devtree_irq_count(node);
-	if (!num_irqs) {
-		return VMM_EFAIL;
-	}
 
 	/* Ensure hypervisor timer is stopped */
 	generic_timer_stop();
@@ -349,10 +313,11 @@ static int __cpuinit generic_timer_clockchip_init(struct vmm_devtree_node *node)
 		return VMM_EFAIL;
 	}
 	cc->name = "gen-hyp-timer";
-	cc->hirq = irq[GENERIC_HYPERVISOR_TIMER];
+	cc->hirq = timer_irq[GENERIC_HYPERVISOR_TIMER];
 	cc->rating = 400;
 	cc->cpumask = vmm_cpumask_of(vmm_smp_processor_id());
 	cc->features = VMM_CLOCKCHIP_FEAT_ONESHOT;
+	cc->freq = generic_timer_hz;
 	vmm_clocks_calc_mult_shift(&cc->mult, &cc->shift,
 				   VMM_NSEC_PER_SEC, generic_timer_hz, 10);
 	cc->min_delta_ns = vmm_clockchip_delta2ns(0xF, cc);
@@ -368,16 +333,16 @@ static int __cpuinit generic_timer_clockchip_init(struct vmm_devtree_node *node)
 	}
 
 	/* Register irq handler for hypervisor timer */
-	rc = vmm_host_irq_register(irq[GENERIC_HYPERVISOR_TIMER],
+	rc = vmm_host_irq_register(timer_irq[GENERIC_HYPERVISOR_TIMER],
 				   "gen-hyp-timer",
 				   &generic_hyp_timer_handler, cc);
 	if (rc) {
 		goto fail_unreg_cc;
 	}
 
-	if (num_irqs > 1) {
+	if (timer_num_irqs > 1) {
 		/* Register irq handler for physical timer */
-		rc = vmm_host_irq_register(irq[GENERIC_PHYSICAL_TIMER],
+		rc = vmm_host_irq_register(timer_irq[GENERIC_PHYSICAL_TIMER],
 					   "gen-phys-timer",
 					   &generic_phys_timer_handler,
 					   NULL);
@@ -386,9 +351,9 @@ static int __cpuinit generic_timer_clockchip_init(struct vmm_devtree_node *node)
 		}
 	}
 
-	if (num_irqs > 2) {
+	if (timer_num_irqs > 2) {
 		/* Register irq handler for virtual timer */
-		rc = vmm_host_irq_register(irq[GENERIC_VIRTUAL_TIMER],
+		rc = vmm_host_irq_register(timer_irq[GENERIC_VIRTUAL_TIMER],
 					   "gen-virt-timer",
 					   &generic_virt_timer_handler,
 					   NULL);
@@ -397,7 +362,7 @@ static int __cpuinit generic_timer_clockchip_init(struct vmm_devtree_node *node)
 		}
 	}
 
-	if (num_irqs > 1) {
+	if (timer_num_irqs > 1) {
 		val = generic_timer_reg_read(GENERIC_TIMER_REG_HCTL);
 		val |= GENERIC_TIMER_HCTL_KERN_PCNT_EN;
 		val |= GENERIC_TIMER_HCTL_KERN_PTMR_EN;
@@ -407,18 +372,62 @@ static int __cpuinit generic_timer_clockchip_init(struct vmm_devtree_node *node)
 	return VMM_OK;
 
 fail_unreg_ptimer:
-	if (num_irqs > 1) {
-		vmm_host_irq_unregister(irq[GENERIC_PHYSICAL_TIMER],
+	if (timer_num_irqs > 1) {
+		vmm_host_irq_unregister(timer_irq[GENERIC_PHYSICAL_TIMER],
 					&generic_phys_timer_handler);
 	}
 fail_unreg_htimer:
-	vmm_host_irq_unregister(irq[GENERIC_HYPERVISOR_TIMER],
-					&generic_hyp_timer_handler);
+	vmm_host_irq_unregister(timer_irq[GENERIC_HYPERVISOR_TIMER],
+				&generic_hyp_timer_handler);
 fail_unreg_cc:
 	vmm_clockchip_unregister(cc);
 fail_free_cc:
 	vmm_free(cc);
 	return rc;
+}
+
+static struct vmm_cpuhp_notify generic_timer_cpuhp = {
+	.name = "GENERIC_TIMER",
+	.state = VMM_CPUHP_STATE_CLOCKCHIP,
+	.startup = generic_timer_startup,
+};
+
+static int __init generic_timer_clockchip_init(struct vmm_devtree_node *node)
+{
+	/* Get and Check generic timer frequency */
+	generic_timer_get_freq(node);
+	if (generic_timer_hz == 0) {
+		return VMM_EFAIL;
+	}
+
+	/* Get hypervisor timer irq number */
+	timer_irq[GENERIC_HYPERVISOR_TIMER] = vmm_devtree_irq_parse_map(node,
+						GENERIC_HYPERVISOR_TIMER);
+	if (!timer_irq[GENERIC_HYPERVISOR_TIMER]) {
+		return VMM_ENODEV;
+	}
+
+	/* Get physical timer irq number */
+	timer_irq[GENERIC_PHYSICAL_TIMER] = vmm_devtree_irq_parse_map(node,
+						GENERIC_PHYSICAL_TIMER);
+	if (!timer_irq[GENERIC_PHYSICAL_TIMER]) {
+		return VMM_ENODEV;
+	}
+
+	/* Get virtual timer irq number */
+	timer_irq[GENERIC_VIRTUAL_TIMER] = vmm_devtree_irq_parse_map(node,
+						GENERIC_VIRTUAL_TIMER);
+	if (!timer_irq[GENERIC_VIRTUAL_TIMER]) {
+		return VMM_ENODEV;
+	}
+
+	/* Number of generic timer irqs */
+	timer_num_irqs = vmm_devtree_irq_count(node);
+	if (!timer_num_irqs) {
+		return VMM_EFAIL;
+	}
+
+	return vmm_cpuhp_register(&generic_timer_cpuhp, TRUE);
 }
 VMM_CLOCKCHIP_INIT_DECLARE(gtv7clkchip, "arm,armv7-timer", generic_timer_clockchip_init);
 VMM_CLOCKCHIP_INIT_DECLARE(gtv8clkchip, "arm,armv8-timer", generic_timer_clockchip_init);

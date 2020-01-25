@@ -6,12 +6,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
@@ -34,6 +34,7 @@
 #include <vmm_macros.h>
 #include <vmm_smp.h>
 #include <vmm_cpumask.h>
+#include <vmm_cpuhp.h>
 #include <vmm_delay.h>
 #include <vmm_timer.h>
 #include <vmm_heap.h>
@@ -110,7 +111,7 @@ static inline bool gic_enable_sre(void)
 		return TRUE;
 
 	val |= ICC_SRE_EL2_SRE;
-	val |= ICC_SRE_EL2_ENABLE;
+	val &= ~ICC_SRE_EL2_ENABLE;
 	arch_gic_write_sre(val);
 	val = arch_gic_read_sre();
 
@@ -420,9 +421,12 @@ static u16 gic_compute_target_list(int *base_cpu,
 				   const struct vmm_cpumask *mask,
 				   unsigned long cluster_id)
 {
-	int cpu = *base_cpu;
-	unsigned long mpidr = arch_gic_cpu_logical_map(cpu);
+	int rc, cpu = *base_cpu;
+	unsigned long mpidr;
 	u16 tlist = 0;
+
+	rc = vmm_smp_map_hwid(cpu, &mpidr);
+	BUG_ON(rc);
 
 	while (cpu < vmm_cpu_count) {
 		/*
@@ -438,7 +442,8 @@ static u16 gic_compute_target_list(int *base_cpu,
 		if (cpu >= vmm_cpu_count)
 			goto out;
 
-		mpidr = arch_gic_cpu_logical_map(cpu);
+		rc = vmm_smp_map_hwid(cpu, &mpidr);
+		BUG_ON(rc);
 
 		if (cluster_id != (mpidr & ~0xffUL)) {
 			cpu--;
@@ -470,7 +475,8 @@ static void gic_send_sgi(u64 cluster_id, u16 tlist, unsigned int irq)
 static void gic_raise(struct vmm_host_irq *d,
 		      const struct vmm_cpumask *mask)
 {
-	int cpu;
+	int rc, cpu;
+	unsigned long mpidr;
 	unsigned int irq = d->hwirq;
 
 	if (WARN_ON(irq >= 16))
@@ -486,7 +492,10 @@ static void gic_raise(struct vmm_host_irq *d,
 		unsigned long cluster_id;
 		u16 tlist;
 
-		cluster_id = arch_gic_cpu_logical_map(cpu) & ~0xffUL;
+		rc = vmm_smp_map_hwid(cpu, &mpidr);
+		BUG_ON(rc);
+
+		cluster_id = mpidr & ~0xffUL;
 		tlist = gic_compute_target_list(&cpu, mask, cluster_id);
 		gic_send_sgi(cluster_id, tlist, irq);
 	}
@@ -498,8 +507,13 @@ static int gic_set_affinity(struct vmm_host_irq *d,
 {
 	u64 val;
 	void *reg;
-	int enabled;
+	int rc, enabled;
+	unsigned long mpidr;
 	unsigned int cpu = vmm_cpumask_any_and(mask_val, cpu_online_mask);
+
+	rc = vmm_smp_map_hwid(cpu, &mpidr);
+	if (rc)
+		return rc;
 
 	if (gic_irq_in_rdist(d))
 		return VMM_EINVALID;
@@ -510,7 +524,7 @@ static int gic_set_affinity(struct vmm_host_irq *d,
 		gic_mask_irq(d);
 
 	reg = gic_dist_base(d) + GICD_IROUTER + (gic_irq(d) * 8);
-	val = gic_mpidr_to_affinity(arch_gic_cpu_logical_map(cpu));
+	val = gic_mpidr_to_affinity(mpidr);
 
 	arch_gic_write_irouter(val, reg);
 
@@ -577,9 +591,10 @@ static void gic_dist_config(void *base, int gic_irqs,
 
 static void __init gic_dist_init(void)
 {
-	int hirq;
+	int rc, hirq;
 	u64 affinity;
 	unsigned int i;
+	unsigned long mpidr;
 	void *base = gic_data.dist_base;
 
 	/* Disable the distributor */
@@ -623,11 +638,15 @@ static void __init gic_dist_init(void)
 	gic_writel(GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE_G1A | GICD_CTLR_ENABLE_G1,
 		   base + GICD_CTLR);
 
+	/* Get MPIDR */
+	rc = vmm_smp_map_hwid(vmm_smp_processor_id(), &mpidr);
+	BUG_ON(rc);
+
 	/*
 	 * Set all global interrupts to the boot CPU only. ARE must be
 	 * enabled.
 	 */
-	affinity = arch_gic_cpu_logical_map(vmm_smp_processor_id());
+	affinity = mpidr;
 	affinity = gic_mpidr_to_affinity(affinity);
 	for (i = 32; i < gic_data.irq_nr; i++)
 		arch_gic_write_irouter(affinity, base + GICD_IROUTER + i * 8);
@@ -635,14 +654,15 @@ static void __init gic_dist_init(void)
 
 static int gic_populate_rdist(void)
 {
-	int i;
+	int i, rc;
 	u32 aff, cpu;
 	u64 typer;
 	unsigned long mpidr;
 
 	cpu = vmm_smp_processor_id();
-	mpidr = (vmm_smp_is_bootcpu()) ?
-		arch_gic_current_mpidr() : arch_gic_cpu_logical_map(cpu);
+	rc = vmm_smp_map_hwid(cpu, &mpidr);
+	if (rc)
+		return rc;
 
 	/*
 	 * Convert affinity to a 32bit value that can be matched to
@@ -881,6 +901,19 @@ static int __init gic_init_bases(void *dist_base,
 	return VMM_OK;
 }
 
+static int gic_startup(struct vmm_cpuhp_notify *cpuhp, u32 cpu)
+{
+	gic_cpu_init();
+
+	return VMM_OK;
+}
+
+static struct vmm_cpuhp_notify gic_cpuhp = {
+	.name = "GICv3",
+	.state = VMM_CPUHP_STATE_HOST_IRQ,
+	.startup = gic_startup,
+};
+
 static int __init gic_validate_dist_version(void *dist_base)
 {
 	u32 reg = gic_readl(dist_base + GICD_PIDR2) & GIC_PIDR2_ARCH_MASK;
@@ -891,7 +924,7 @@ static int __init gic_validate_dist_version(void *dist_base)
 	return 0;
 }
 
-static int __cpuinit gic_of_init(struct vmm_devtree_node *node)
+static int __init gic_of_init(struct vmm_devtree_node *node)
 {
 	virtual_addr_t va;
 	void *dist_base;
@@ -899,11 +932,6 @@ static int __cpuinit gic_of_init(struct vmm_devtree_node *node)
 	u64 redist_stride;
 	u32 nr_redist_regions;
 	int err, i;
-
-	if (!vmm_smp_is_bootcpu()) {
-		gic_cpu_init();
-		return VMM_OK;
-	}
 
 	if (WARN_ON(!node)) {
 		return VMM_ENODEV;
@@ -968,7 +996,7 @@ static int __cpuinit gic_of_init(struct vmm_devtree_node *node)
 	if (err)
 		goto out_unmap_rdist;
 
-	return VMM_OK;
+	return vmm_cpuhp_register(&gic_cpuhp, FALSE);
 
 out_unmap_rdist:
 	for (i = 0; i < nr_redist_regions; i++) {

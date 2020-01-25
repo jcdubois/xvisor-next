@@ -4,7 +4,7 @@ env:
    #   via the "travis encrypt" command using the project repo's public key
    - secure: "cOzsF/T3Uk+snGDPrjnrN2bAMVecrpbvzCCB3rbGlWvjeu9ndNMsvsCVu7MIEe4RBoZkdtPDsQLcDt9W0F1mx9KHliX/wrBFpgfWcY+OJVeZ0GBW2B4oQ6YTTCuFfhqK2TF9IfiZMQCqMddIcj0CdHHGvEu/gxVuiLYR6XG74SHMORQxL9fyRRrZCBz4OVu0hVTNoKClBAS8zc8b9l+UrFoYoMEEe9ldoYfgSIiabvkoeGzHytYcnc0PGcwjBBTc/4+msKHVg+lNy7k5gksihQQSUbYRRQuzYAKlldwnFi+aVk81b8KdMAwjK1XVV540vI4n2sGaWaZ8uKyN6dLSWWtQ26jYgmz/louabHJ6+LBefAXRO/l+07jwMPS4bX1R+SE35QIC2CSNcR8Jad0kPULT+9JuH3hV1xqlD7JT/x8xGak7KU7nnURrAGPnXsCP6uMe8RrX4UiOdmHL1XhyIbKHoJpMyptXlQ2qtsvaE4zeLuH9AQBg6tqvMYCz7wd4XTbUtr+MZIrtdSHMSV0DDcxao+SBNCP5WCcK4GzEXQZ9G844CT68mYCLYUprnUR23WMwoLEM2EnI8uEm4ImL3wu/uiYnOjgZQDNk71HsAckEdjvt8sgg3rMlTJu88ZtH7Xeq4rTz8qyGYy7na5Kg2dyatFqGAvSdlYOn9NxdArQ="
 
-dist: trusty
+dist: bionic
 
 language: c
 
@@ -12,10 +12,13 @@ compiler:
   - gcc
 
 before_install:
-  - sudo add-apt-repository ppa:team-gcc-arm-embedded/ppa -y
   - sudo apt-get -q update
-  - sudo apt-get install -y gcc-arm-embedded
   - sudo apt-get install -y gcc-aarch64-linux-gnu
+  - sudo apt-get install -y gcc-arm-linux-gnueabi
+  - sudo apt-get install -y gcc-arm-none-eabi
+  - sudo apt-get install -y gcc-riscv64-linux-gnu
+  - sudo apt-get install -y device-tree-compiler
+  - sudo apt-get install -y gcc
   - echo -n | openssl s_client -connect scan.coverity.com:443 | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | sudo tee -a /etc/ssl/certs/ca-
 
 addons:

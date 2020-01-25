@@ -27,15 +27,15 @@
 
 # Current Version
 MAJOR = 0
-MINOR = 2
-RELEASE = 9
+MINOR = 3
+RELEASE = 0
 
 # Select Make Options:
-# o  Do not use make's built-in rules and variables
+# o  Do not use make's built-in rules
 # o  Do not print "Entering directory ...";
-MAKEFLAGS += -rR --no-print-directory
+MAKEFLAGS += -r --no-print-directory
 
-# Find out source & build directories
+# Find out source, build and install directories
 src_dir=$(CURDIR)
 ifdef O
  build_dir=$(shell readlink -f $(O))
@@ -44,6 +44,14 @@ else
 endif
 ifeq ($(build_dir),$(CURDIR))
 $(error Build directory is same as source directory.)
+endif
+ifdef I
+ install_dir=$(shell readlink -f $(I))
+else
+ install_dir=$(CURDIR)/install
+endif
+ifeq ($(install_dir),$(CURDIR))
+$(error Install directory is same as source directory.)
 endif
 
 # Check if verbosity is ON for build process
@@ -69,6 +77,9 @@ export PROJECT_NAME = Xvisor (eXtensible Versatile hypervISOR)
 export PROJECT_VERSION = $(MAJOR).$(MINOR).$(RELEASE)
 export CONFIG_DIR=$(build_dir)/openconf
 export CONFIG_FILE=$(CONFIG_DIR)/.config
+
+# GIT describe
+export GITDESC=$(shell if [ -d $(src_dir)/.git ]; then git describe 2> /dev/null; fi)
 
 # Openconf settings
 export OPENCONF_PROJECT = $(PROJECT_NAME)
@@ -108,12 +119,32 @@ targets-y+=$(build_dir)/vmm.bin
 targets-y+=$(build_dir)/system.map
 
 # Setup compilation environment
-cpp=$(CROSS_COMPILE)cpp
+ifdef CROSS_COMPILE
+CC		=	$(CROSS_COMPILE)gcc
+CPP		=	$(CROSS_COMPILE)cpp
+AR		=	$(CROSS_COMPILE)ar
+LD		=	$(CROSS_COMPILE)ld
+NM		=	$(CROSS_COMPILE)nm
+OBJCOPY		=	$(CROSS_COMPILE)objcopy
+else
+CC		?=	gcc
+CPP		?=	cpp
+AR		?=	ar
+LD		?=	ld
+NM		?=	nm
+OBJCOPY		?=	objcopy
+endif
+AS		=	$(CC)
+DTC		=	dtc
+
 cppflags=-include $(OPENCONF_TMPDIR)/$(OPENCONF_AUTOHEADER)
 cppflags+=-include $(core_dir)/include/vmm_openconf.h
 cppflags+=-DCONFIG_MAJOR=$(MAJOR)
 cppflags+=-DCONFIG_MINOR=$(MINOR)
 cppflags+=-DCONFIG_RELEASE=$(RELEASE)
+ifneq ($(GITDESC),)
+cppflags+=-DCONFIG_GITDESC="\"$(GITDESC)\""
+endif
 cppflags+=-I$(cpu_dir)/include
 cppflags+=-I$(cpu_common_dir)/include
 cppflags+=-I$(board_dir)/include
@@ -128,34 +159,26 @@ cppflags+=-I$(arch_dir)/include
 cppflags+=$(cpu-cppflags)
 cppflags+=$(board-cppflags)
 cppflags+=$(libs-cppflags-y)
-cc=$(CROSS_COMPILE)gcc
-cflags=-g -Wall -nostdlib --sysroot=$(drivers_dir)/include -fno-builtin -D__VMM__
-cflags+=$(board-cflags) 
-cflags+=$(cpu-cflags) 
-cflags+=$(libs-cflags-y) 
+cflags=-g -Wall -nostdlib --sysroot=$(drivers_dir)/include -fno-builtin -fno-stack-protector -D__VMM__
+cflags+=$(board-cflags)
+cflags+=$(cpu-cflags)
+cflags+=$(libs-cflags-y)
 cflags+=$(cppflags)
 ifdef CONFIG_PROFILE
 cflags+=-finstrument-functions
 endif
-as=$(CROSS_COMPILE)gcc
-asflags=-g -Wall -nostdlib -D__ASSEMBLY__ 
-asflags+=$(board-asflags) 
-asflags+=$(cpu-asflags) 
-asflags+=$(libs-asflags-y) 
+asflags=-g -Wall -nostdlib -D__ASSEMBLY__
+asflags+=$(board-asflags)
+asflags+=$(cpu-asflags)
+asflags+=$(libs-asflags-y)
 asflags+=$(cppflags)
-ar=$(CROSS_COMPILE)ar
 arflags=rcs
-ld=$(CROSS_COMPILE)gcc
 ldflags=-g -Wall -nostdlib -Wl,--build-id=none
-ldflags+=$(board-ldflags) 
-ldflags+=$(cpu-ldflags) 
-ldflags+=$(libs-ldflags-y) 
-merge=$(CROSS_COMPILE)ld
+ldflags+=$(board-ldflags)
+ldflags+=$(cpu-ldflags)
+ldflags+=$(libs-ldflags-y)
 mergeflags=-r
-data=$(CROSS_COMPILE)ld
 dataflags=-r -b binary
-objcopy=$(CROSS_COMPILE)objcopy
-nm=$(CROSS_COMPILE)nm
 
 # If only "modules" is specified as make goals then
 # define __VMM_MODULES__ in cflags.
@@ -176,7 +199,7 @@ endef
 # Setup functions for compilation
 merge_objs = $(V)mkdir -p `dirname $(1)`; \
 	     echo " (merge)     $(subst $(build_dir)/,,$(1))"; \
-	     $(merge) $(mergeflags) $(2) -o $(1)
+	     $(LD) $(mergeflags) $(2) -o $(1)
 merge_deps = $(V)mkdir -p `dirname $(1)`; \
 	     echo " (merge-dep) $(subst $(build_dir)/,,$(1))"; \
 	     cat $(2) > $(1)
@@ -185,32 +208,40 @@ copy_file =  $(V)mkdir -p `dirname $(1)`; \
 	     cp -f $(2) $(1)
 compile_cpp = $(V)mkdir -p `dirname $(1)`; \
 	     echo " (cpp)       $(subst $(build_dir)/,,$(1))"; \
-	     $(cpp) $(cppflags) $(2) | grep -v "\#" > $(1)
+	     $(CPP) $(cppflags) -x c $(2) | grep -v "\#" > $(1)
 compile_cc_dep = $(V)mkdir -p `dirname $(1)`; \
 	     echo " (cc-dep)    $(subst $(build_dir)/,,$(1))"; \
 	     echo -n `dirname $(1)`/ > $(1) && \
-	     $(cc) $(cflags) $(call dynamic_flags,$(1),$(2))   \
+	     $(CC) $(cflags) $(call dynamic_flags,$(1),$(2))   \
 	       -MM $(2) >> $(1) || rm -f $(1)
 compile_cc = $(V)mkdir -p `dirname $(1)`; \
 	     echo " (cc)        $(subst $(build_dir)/,,$(1))"; \
-	     $(cc) $(cflags) $(call dynamic_flags,$(1),$<) -c $(2) -o $(1)
+	     $(CC) $(cflags) $(call dynamic_flags,$(1),$(2)) -c $(2) -o $(1)
 compile_as_dep = $(V)mkdir -p `dirname $(1)`; \
 	     echo " (as-dep)    $(subst $(build_dir)/,,$(1))"; \
 	     echo -n `dirname $(1)`/ > $(1) && \
-	     $(as) $(asflags) $(call dynamic_flags,$(1),$(2))  \
+	     $(AS) $(asflags) $(call dynamic_flags,$(1),$(2))  \
 	       -MM $(2) >> $(1) || rm -f $(1)
 compile_as = $(V)mkdir -p `dirname $(1)`; \
 	     echo " (as)        $(subst $(build_dir)/,,$(1))"; \
-	     $(as) $(asflags) $(call dynamic_flags,$(1),$<) -c $(2) -o $(1)
+	     $(AS) $(asflags) $(call dynamic_flags,$(1),$(2)) -c $(2) -o $(1)
 compile_ld = $(V)mkdir -p `dirname $(1)`; \
 	     echo " (ld)        $(subst $(build_dir)/,,$(1))"; \
-	     $(ld) $(3) $(ldflags) -Wl,-T$(2) -o $(1)
+	     $(CC) $(3) $(ldflags) -Wl,-T$(2) -o $(1)
 compile_nm = $(V)mkdir -p `dirname $(1)`; \
 	     echo " (nm)        $(subst $(build_dir)/,,$(1))"; \
-	     $(nm) -n $(2) | grep -v '\( [aNUw] \)\|\(__crc_\)\|\( \$[adt]\)' > $(1)
+	     $(NM) -n $(2) | grep -v '\( [aNUw] \)\|\(__crc_\)\|\( \$[adt]\)' > $(1)
 compile_objcopy = $(V)mkdir -p `dirname $(1)`; \
 	     echo " (objcopy)   $(subst $(build_dir)/,,$(1))"; \
-	     $(objcopy) -O binary $(2) $(1)
+	     $(OBJCOPY) -O binary $(2) $(1)
+inst_file =  $(V)mkdir -p `dirname $(1)`; \
+	     echo " (install)   $(subst $(install_dir)/,,$(1))"; \
+	     cp -f $(2) $(1)
+inst_file_list =  $(V)mkdir -p $(1); \
+	     for f in $(2) ; do \
+	     echo " (install)  " `echo $$f | sed -e "s@$(3)/@@"`; \
+	     cp -f $$f $(1); \
+	     done
 
 # Setup list of objects.mk files
 cpu-object-mks=$(shell if [ -d $(cpu_dir) ]; then find $(cpu_dir) -iname "objects.mk" | sort -r; fi)
@@ -229,13 +260,13 @@ emulators-object-mks=$(shell if [ -d $(emulators_dir) ]; then find $(emulators_d
 all:
 
 # Include all object.mk files
-include $(cpu-object-mks) 
-include $(cpu-common-object-mks) 
-include $(board-object-mks) 
-include $(board-common-object-mks) 
-include $(core-object-mks) 
-include $(libs-object-mks) 
-include $(commands-object-mks) 
+include $(cpu-object-mks)
+include $(cpu-common-object-mks)
+include $(board-object-mks)
+include $(board-common-object-mks)
+include $(core-object-mks)
+include $(libs-object-mks)
+include $(commands-object-mks)
 include $(daemons-object-mks)
 include $(drivers-object-mks)
 include $(emulators-object-mks)
@@ -315,12 +346,18 @@ all-m+=$(emulators-m:.o=.xo)
 
 # Default rule "make"
 .PHONY: all
-all: $(CONFIG_FILE) $(tools-y) $(targets-y)
+all: $(CONFIG_FILE) $(tools-y) $(targets-y) $(dtbs-y)
+
+.PHONY: dtbs
+dtbs: $(CONFIG_FILE) $(dtbs-y)
 
 .PHONY: modules
 modules: $(CONFIG_FILE) $(all-m)
 
-dtbs: $(dtbs-y)
+.PHONY: install
+install: all
+	$(call inst_file_list,$(install_dir),$(targets-y),$(build_dir))
+	$(call inst_file_list,$(install_dir),$(dtbs-y),$(build_dir))
 
 # Include additional rules for tools
 include $(tools_dir)/rules.mk
@@ -401,21 +438,33 @@ all-deps-2 = $(if $(findstring clean,$(MAKECMDGOALS)),,$(all-deps-1))
 # Rule for "make clean"
 .PHONY: clean
 clean:
-ifeq ($(build_dir),$(CURDIR)/build)
 	$(V)mkdir -p $(build_dir)
-	$(if $(V), @echo " (clean)     $(build_dir)")
-	$(V)find $(build_dir) -type d ! -name '$(shell basename $(CONFIG_DIR))' -a \
-	! -name '$(shell basename $(build_dir))' -exec rm -rf {} +
-	$(V)find $(build_dir) -maxdepth 1 -type f -exec rm -rf {} +
-endif
-	$(V)$(MAKE) -C $(src_dir)/tools/dtc clean
+	$(if $(V), @echo " (rm)        $(build_dir)/*.c")
+	$(V)find $(build_dir) -type f -name "*.c" -exec rm -rf {} +
+	$(if $(V), @echo " (rm)        $(build_dir)/*.s")
+	$(V)find $(build_dir) -type f -name "*.s" -exec rm -rf {} +
+	$(if $(V), @echo " (rm)        $(build_dir)/*.S")
+	$(V)find $(build_dir) -type f -name "*.S" -exec rm -rf {} +
+	$(if $(V), @echo " (rm)        $(build_dir)/*.o")
+	$(V)find $(build_dir) -type f -name "*.o" -exec rm -rf {} +
+	$(if $(V), @echo " (rm)        $(build_dir)/*.elf")
+	$(V)find $(build_dir) -type f -name "*.elf" -exec rm -rf {} +
+	$(if $(V), @echo " (rm)        $(build_dir)/*.bin")
+	$(V)find $(build_dir) -type f -name "*.bin" -exec rm -rf {} +
 
 # Rule for "make distclean"
 .PHONY: distclean
 distclean:
+	$(V)mkdir -p $(build_dir)
+	$(if $(V), @echo " (rm)        $(build_dir)/*.dep")
+	$(V)find $(build_dir) -type f -name "*.dep" -exec rm -rf {} +
 ifeq ($(build_dir),$(CURDIR)/build)
-	$(if $(V), @echo " (rm)       $(build_dir)")
+	$(if $(V), @echo " (rm)        $(build_dir)")
 	$(V)rm -rf $(build_dir)
+endif
+ifeq ($(install_dir),$(CURDIR)/install)
+	$(if $(V), @echo " (rm)        $(install_dir)")
+	$(V)rm -rf $(install_dir)
 endif
 	$(V)$(MAKE) -C $(src_dir)/tools/openconf clean
 
@@ -449,4 +498,3 @@ savedefconfig:
 	$(V)$(MAKE) -C tools/openconf defconfig
 	./tools/openconf/conf -D $(src_dir)/arch/$(ARCH)/configs/$@ $(OPENCONF_INPUT)
 	./tools/openconf/conf -s $(OPENCONF_INPUT)
-

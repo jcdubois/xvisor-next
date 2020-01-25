@@ -6,12 +6,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
@@ -28,12 +28,22 @@
 
 #define VGIC_V2_MAX_LRS		(1 << 6)
 #define VGIC_V3_MAX_LRS		16
-#define VGIC_MAX_LRS		(1 << 6)
+
+#define VGIC_MAX_LRS		VGIC_V2_MAX_LRS
+
+#define VGIC_V3_MAX_CPUS	255
+#define VGIC_V2_MAX_CPUS	8
+
 #define VGIC_MAX_IRQS		1024
 
 enum vgic_type {
 	VGIC_V2,		/* Good old GICv2 */
 	VGIC_V3,		/* New fancy GICv3 */
+};
+
+enum vgic_model_type {
+	VGIC_MODEL_V2,		/* Good old GICv2 */
+	VGIC_MODEL_V3,		/* New fancy GICv3 */
 };
 
 #define VGIC_LR_STATE_PENDING	(1 << 0)
@@ -45,7 +55,6 @@ enum vgic_type {
 struct vgic_lr {
 	u16 virtid;
 	u16 physid;
-	u16 cpuid;
 	u8 prio;
 	u8 flags;
 };
@@ -57,14 +66,26 @@ struct vgic_v2_hw_state {
 	u32 lr[VGIC_V2_MAX_LRS];
 };
 
+struct vgic_v3_hw_state {
+	u32 hcr;
+	u32 vmcr;
+	u32 ap0r[4];
+	u32 ap1r[4];
+	u64 lr[VGIC_V3_MAX_LRS];
+};
+
 struct vgic_hw_state {
 	union {
 		struct vgic_v2_hw_state v2;
+		struct vgic_v3_hw_state v3;
 	};
 };
 
 struct vgic_params {
 	enum vgic_type type;
+
+	bool can_emulate_gic_v2;
+	bool can_emulate_gic_v3;
 
 	physical_addr_t vcpu_pa;
 
@@ -73,19 +94,26 @@ struct vgic_params {
 };
 
 struct vgic_ops {
-	void (*reset_state)(struct vgic_hw_state *state);
-	void (*save_state)(struct vgic_hw_state *state);
-	void (*restore_state)(struct vgic_hw_state *state);
+	void (*reset_state)(struct vgic_hw_state *state,
+			    enum vgic_model_type model);
+	void (*save_state)(struct vgic_hw_state *state,
+			   enum vgic_model_type model);
+	void (*restore_state)(struct vgic_hw_state *state,
+			      enum vgic_model_type model);
 	bool (*check_underflow)(void);
 	void (*enable_underflow)(void);
 	void (*disable_underflow)(void);
 	void (*read_elrsr)(u32 *elrsr0, u32 *elrsr1);
-	void (*set_lr)(u32 lr, struct vgic_lr *lrv);
-	void (*get_lr)(u32 lr, struct vgic_lr *lrv);
+	void (*read_eisr)(u32 *eisr0, u32 *eisr1);
+	void (*set_lr)(u32 lr, struct vgic_lr *lrv, enum vgic_model_type model);
+	void (*get_lr)(u32 lr, struct vgic_lr *lrv, enum vgic_model_type model);
 	void (*clear_lr)(u32 lr);
 };
 
 int vgic_v2_probe(struct vgic_ops *ops, struct vgic_params *params);
 void vgic_v2_remove(struct vgic_ops *ops, struct vgic_params *params);
+
+int vgic_v3_probe(struct vgic_ops *ops, struct vgic_params *params);
+void vgic_v3_remove(struct vgic_ops *ops, struct vgic_params *params);
 
 #endif /* __VGIC_H__ */

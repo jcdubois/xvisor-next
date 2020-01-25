@@ -6,12 +6,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
@@ -55,7 +55,7 @@ unsigned int rtc_month_days(unsigned int month, unsigned int year);
 /**
  * The number of days since January 1. (0 to 365)
  */
-unsigned int rtc_year_days(unsigned int day, 
+unsigned int rtc_year_days(unsigned int day,
 				unsigned int month, unsigned int year);
 
 /**
@@ -73,6 +73,24 @@ int rtc_tm_to_time(struct rtc_time *tm, unsigned long *time);
  */
 void rtc_time_to_tm(unsigned long time, struct rtc_time *tm);
 
+/**
+ * Convert Gregorian date to seconds since 01-01-1970 00:00:00.
+ */
+time64_t rtc_tm_to_time64(struct rtc_time *tm);
+
+/**
+ * Convert seconds since 01-01-1970 00:00:00 to Gregorian date.
+ */
+void rtc_time64_to_tm(time64_t time, struct rtc_time *tm);
+
+/* Interrupt event flags */
+#define RTC_IRQF 0x80	/* Any of the following is active */
+#define RTC_PF 0x40	/* Periodic interrupt */
+#define RTC_AF 0x20	/* Alarm interrupt */
+#define RTC_UF 0x10	/* Update interrupt for 1Hz RTC */
+
+#define RTC_MAX_FREQ	8192
+
 /*
  * This data structure is inspired by the EFI (v0.92) wakeup
  * alarm API.
@@ -83,14 +101,22 @@ struct rtc_wkalrm {
 	struct rtc_time time;	/* time the alarm is set to */
 };
 
+struct rtc_device;
+
+struct rtc_class_ops {
+	int (*set_time)(struct rtc_device *rdev, struct rtc_time *tm);
+	int (*read_time)(struct rtc_device *rdev, struct rtc_time *tm);
+	int (*set_alarm)(struct rtc_device *rdev, struct rtc_wkalrm *alrm);
+	int (*read_alarm)(struct rtc_device *rdev, struct rtc_wkalrm *alrm);
+	int (*alarm_irq_enable)(struct rtc_device *rdev, unsigned int enabled);
+	int (*set_offset)(struct rtc_device *rdev, long offset);
+	int (*read_offset)(struct rtc_device *rdev, long *offset);
+};
+
 struct rtc_device {
 	char name[VMM_FIELD_NAME_SIZE];
 	struct vmm_device dev;
-	int (*set_time)(struct rtc_device *rdev, struct rtc_time *tm);
-	int (*get_time)(struct rtc_device *rdev, struct rtc_time *tm);
-	int (*set_alarm)(struct rtc_device *rdev, struct rtc_wkalrm *alrm);
-	int (*get_alarm)(struct rtc_device *rdev, struct rtc_wkalrm *alrm);
-	int (*alarm_irq_enable)(struct rtc_device *rdev, unsigned int enabled);
+	const struct rtc_class_ops *ops;
 	void *priv;
 };
 
@@ -107,8 +133,15 @@ int rtc_device_sync_wallclock(struct rtc_device *rdev);
 /** Sync rtc device time from current wall-clock time */
 int rtc_device_sync_device(struct rtc_device *rdev);
 
+/** Update rtc device interrupt */
+void rtc_update_irq(struct rtc_device *rtc,
+		    unsigned long num, unsigned long events);
+
 /** Register rtc device to device driver framework */
-int rtc_device_register(struct rtc_device *rdev);
+struct rtc_device *rtc_device_register(struct vmm_device *parent,
+					const char *name,
+					const struct rtc_class_ops *ops,
+					void *priv);
 
 /** Unregister rtc device from device driver framework */
 int rtc_device_unregister(struct rtc_device *rdev);

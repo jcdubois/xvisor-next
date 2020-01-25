@@ -18,194 +18,84 @@
 #
 # @file Makefile.inc
 # @author Anup Patel (anup@brainfault.org)
-# @brief common makefile to build basic firmware
+# @brief common arm32 makefile to build basic firmware
 # */
-
-# Include top-level configuration file if present
--include $(build_dir)/openconf/.config
 
 board_usr_stack_size ?= 4096
 
-FW_CROSS_COMPILE=$(CROSS_COMPILE)
-FW_CPPFLAGS=-I. -I$(common_dir) -DTEXT_START=$(board_text_start) -DUSR_STACK_SIZE=$(board_usr_stack_size)
-FW_CFLAGS=-g -Wall -Werror -nostdlib -msoft-float -marm
-FW_ASFLAGS=-g -Wall -Werror -nostdlib -msoft-float -marm -D__ASSEMBLY__
-ifeq ($(board_arch),v5)
-FW_CPPFLAGS+=-DARM_ARCH_v5
-FW_CFLAGS+=-march=armv5te $(FW_CPPFLAGS)
-FW_ASFLAGS+=-march=armv5te $(FW_CPPFLAGS)
-endif
-ifeq ($(board_arch),v6)
-FW_CPPFLAGS+=-DARM_ARCH_v6
-FW_CFLAGS+=-march=armv6 $(FW_CPPFLAGS)
-FW_ASFLAGS+=-march=armv6 $(FW_CPPFLAGS)
-endif
-ifeq ($(board_arch),v7)
-FW_CPPFLAGS+=-DARM_ARCH_v7
-FW_CFLAGS+=-march=armv7-a $(FW_CPPFLAGS)
-FW_ASFLAGS+=-march=armv7-a $(FW_CPPFLAGS)
-endif
-ifeq ($(board_arch),v7ve)
-FW_CPPFLAGS+=-DARM_ARCH_v7ve
-FW_CFLAGS+=-march=armv7ve $(FW_CPPFLAGS)
-FW_ASFLAGS+=-march=armv7ve $(FW_CPPFLAGS)
-endif
-FW_LDFLAGS=$(FW_CFLAGS) -Wl,--build-id=none
-FW_AS=$(FW_CROSS_COMPILE)gcc
-FW_CC=$(FW_CROSS_COMPILE)gcc
-FW_CPP=$(FW_CROSS_COMPILE)cpp
-FW_OBJCOPY=$(FW_CROSS_COMPILE)objcopy
-
-ifeq ($(board_arch),v5)
-FIRMWARE_OBJS=$(obj_dir)/arm_entry_v5.o \
-		$(obj_dir)/arm_cache_v5.o \
-		$(obj_dir)/arm_mmu_v5.o
-endif
-
-ifeq ($(board_arch),v6)
-FIRMWARE_OBJS=$(obj_dir)/arm_entry_v6.o \
-		$(obj_dir)/arm_cache_v6.o \
-		$(obj_dir)/arm_mmu_v6.o
-endif
-
-ifeq ($(board_arch),v7)
-FIRMWARE_OBJS=$(obj_dir)/arm_entry_v7.o \
-		$(obj_dir)/arm_cache_v7.o \
-		$(obj_dir)/arm_mmu_v7.o
-endif
-
-ifeq ($(board_arch),v7ve)
-FIRMWARE_OBJS=$(obj_dir)/arm_entry_v7.o \
-		$(obj_dir)/arm_cache_v7.o \
-		$(obj_dir)/arm_mmu_v7.o
-endif
-
-FIRMWARE_OBJS+=$(board_objs)
-
-FIRMWARE_OBJS+=$(obj_dir)/arm_main.o \
-		$(obj_dir)/arm_heap.o \
-		$(obj_dir)/arm_irq.o \
-		$(obj_dir)/arm_stdio.o \
-		$(obj_dir)/arm_string.o \
-		$(obj_dir)/arm_math.o \
-		$(obj_dir)/dhry_1.o \
-		$(obj_dir)/dhry_2.o \
-		$(obj_dir)/dhry_port.o
-
-ifeq ($(board_fdt_support),y)
-FIRMWARE_OBJS+=$(obj_dir)/libfdt/fdt.o \
-		$(obj_dir)/libfdt/fdt_ro.o \
-		$(obj_dir)/libfdt/fdt_rw.o \
-		$(obj_dir)/libfdt/fdt_strerror.o \
-		$(obj_dir)/libfdt/fdt_support.o \
-		$(obj_dir)/libfdt/fdt_sw.o \
-		$(obj_dir)/libfdt/fdt_wip.o
-endif
-
-FIRMWARE_CPPFLAGS=-DFIRMWARE_BOOT
+ARCH_CPPFLAGS=$(board_cppflags) -DFIRMWARE_BOOT
 ifeq ($(board_smp), y)
-FIRMWARE_CPPFLAGS+=-DBOARD_SMP
+ARCH_CPPFLAGS+=-DBOARD_SMP
 endif
 ifeq ($(board_secure_extn),y)
-FIRMWARE_CPPFLAGS+=-DARM_SECURE_EXTN_IMPLEMENTED
+ARCH_CPPFLAGS+=-DARM_SECURE_EXTN_IMPLEMENTED
 endif
-ifeq ($(board_fdt_support),y)
-FIRMWARE_CPPFLAGS+=-DBOARD_FDT_SUPPORT
+ARCH_CPPFLAGS+=-DTEXT_START=$(board_text_start) -DUSR_STACK_SIZE=$(board_usr_stack_size)
+ARCH_CFLAGS=$(board_cflags) -msoft-float -marm
+ARCH_ASFLAGS=$(board_asflags) -msoft-float -marm
+ARCH_LDSCRIPT=$(obj_dir)/firmware.lnk
+ARCH_LDFLAGS=$(board_ldflags)
+
+ifeq ($(board_arch),v5)
+ARCH_CPPFLAGS+=-DARM_ARCH_v5
+ARCH_CFLAGS+=-march=armv5te
+ARCH_ASFLAGS+=-march=armv5te
 endif
-FIRMWARE_CPPFLAGS+=$(board_cppflags)
-FIRMWARE_CFLAGS=$(FIRMWARE_CPPFLAGS) $(board_cflags)
-FIRMWARE_ASFLAGS=$(FIRMWARE_CPPFLAGS) $(board_asflags)
-FIRMWARE_LINK_SCRIPT=$(obj_dir)/firmware.lnk
-FIRMWARE_LDFLAGS=-Wl,-T$(FIRMWARE_LINK_SCRIPT) $(FIRMWARE_CPPFLAGS) $(board_ldflags)
-
-FIRMWARE_COMMON_DEPS=$(common_dir)/arm_asm_macro.h \
-                $(common_dir)/arm_math.h \
-                $(common_dir)/arm_defines.h \
-                $(common_dir)/arm_types.h \
-                $(common_dir)/arm_board.h \
-                $(common_dir)/arm_heap.h \
-                $(common_dir)/arm_inline_asm.h \
-                $(common_dir)/arm_cache.h \
-                $(common_dir)/arm_io.h \
-                $(common_dir)/arm_irq.h \
-                $(common_dir)/arm_mmu.h \
-                $(common_dir)/arm_stdio.h \
-                $(common_dir)/arm_string.h
-
-ifeq ($(board_fdt_support),y)
-FIRMWARE_COMMON_DEPS+=$(common_dir)/libfdt/fdt.h \
-                $(common_dir)/libfdt/fdt_support.h \
-                $(common_dir)/libfdt/libfdt.h \
-                $(common_dir)/libfdt/libfdt_env.h \
-                $(common_dir)/libfdt/libfdt_internal.h
+ifeq ($(board_arch),v6)
+ARCH_CPPFLAGS+=-DARM_ARCH_v6
+ARCH_CFLAGS+=-march=armv6
+ARCH_ASFLAGS+=-march=armv6
+endif
+ifeq ($(board_arch),v7)
+ARCH_CPPFLAGS+=-DARM_ARCH_v7
+ARCH_CFLAGS+=-march=armv7-a
+ARCH_ASFLAGS+=-march=armv7-a
+endif
+ifeq ($(board_arch),v7ve)
+ARCH_CPPFLAGS+=-DARM_ARCH_v7ve
+ARCH_CFLAGS+=-march=armv7ve
+ARCH_ASFLAGS+=-march=armv7ve
 endif
 
-CPATCH32=$(build_dir)/tools/cpatch/cpatch32
-ELF2CPATCH=$(top_dir)/arch/arm/cpu/arm32/elf2cpatch.py
+ARCH_OBJ_DIR=$(obj_dir)
+ARCH_BASIC_DIR=$(basic_dir)
+ARCH_DIR=$(arch_dir)
 
-cmd_patch_elf = CROSS_COMPILE=$(FW_CROSS_COMPILE) \
-		$(ELF2CPATCH) -f $@ | $(CPATCH32) $@ 0
-
-FIRMWARE_TARGETS = $(obj_dir)/firmware.bin
-ifdef CONFIG_ARM32
-FIRMWARE_TARGETS += $(obj_dir)/firmware.bin.patched
+ifeq ($(board_arch),v5)
+ARCH_OBJS= $(ARCH_OBJ_DIR)/arch_entry_v5.o \
+	   $(ARCH_OBJ_DIR)/arch_cache_v5.o \
+	   $(ARCH_OBJ_DIR)/arch_mmu_v5.o
 endif
 
-.PHONY: all
-all: $(FIRMWARE_TARGETS)
+ifeq ($(board_arch),v6)
+ARCH_OBJS= $(ARCH_OBJ_DIR)/arch_entry_v6.o \
+	   $(ARCH_OBJ_DIR)/arch_cache_v6.o \
+	   $(ARCH_OBJ_DIR)/arch_mmu_v6.o
+endif
 
-$(obj_dir)/firmware.bin.patched: $(obj_dir)/firmware.elf.patched
-	@mkdir -p `dirname $@`
-	@echo " (OBJCOPY)   $(subst $(obj_dir)/,,$@)"
-	@$(FW_OBJCOPY) -O binary $< $@
+ifeq ($(board_arch),v7)
+ARCH_OBJS= $(ARCH_OBJ_DIR)/arch_entry_v7.o \
+	   $(ARCH_OBJ_DIR)/arch_cache_v7.o \
+	   $(ARCH_OBJ_DIR)/arch_mmu_v7.o
+endif
 
-$(obj_dir)/firmware.elf.patched: $(obj_dir)/firmware.elf
-	@mkdir -p `dirname $@`
-	@cp $< $@
-	@echo " (PATCH)     $(subst $(obj_dir)/,,$@)"
-	@$(call cmd_patch_elf)
+ifeq ($(board_arch),v7ve)
+ARCH_OBJS= $(ARCH_OBJ_DIR)/arch_entry_v7.o \
+	   $(ARCH_OBJ_DIR)/arch_cache_v7.o \
+	   $(ARCH_OBJ_DIR)/arch_mmu_v7.o
+endif
 
-$(obj_dir)/firmware.bin: $(obj_dir)/firmware.elf
-	@mkdir -p `dirname $@`
-	@echo " (OBJCOPY)   $(subst $(obj_dir)/,,$@)"
-	@$(FW_OBJCOPY) -O binary $< $@
+ARCH_OBJS+= $(ARCH_OBJ_DIR)/arch_irq.o \
+	    $(ARCH_OBJ_DIR)/arch_linux.o \
+	    $(ARCH_OBJ_DIR)/arch_math.o \
+	    $(board_objs)
 
-$(obj_dir)/firmware.elf: $(FIRMWARE_OBJS) $(FIRMWARE_LINK_SCRIPT)
-	@mkdir -p `dirname $@`
-	@echo " (LD)        $(subst $(obj_dir)/,,$@)"
-	@$(FW_CC) $(FIRMWARE_OBJS) $(FW_LDFLAGS) $(FIRMWARE_LDFLAGS) -o $@
+ARCH_DEPS= $(ARCH_DIR)/arm_asm_macro.h \
+           $(ARCH_DIR)/arm_defines.h \
+           $(ARCH_DIR)/arm_inline_asm.h \
+           $(ARCH_DIR)/arch_math.h \
+           $(ARCH_DIR)/arch_types.h \
+           $(ARCH_DIR)/arch_io.h
 
-$(obj_dir)/%.lnk: $(common_dir)/%.ld
-	@mkdir -p `dirname $@`
-	@echo " (CPP)       $(subst $(obj_dir)/,,$@)"
-	@$(FW_CPP) $(FW_CPPFLAGS) $(FIRMWARE_CPPFLAGS) $< | grep -v "\#" > $@
-
-$(obj_dir)/%.o: %.c $(FIRMWARE_COMMON_DEPS)
-	@mkdir -p `dirname $@`
-	@echo " (CC)        $(subst $(obj_dir)/,,$@)"
-	@$(FW_CC) $(FW_CFLAGS) $(FIRMWARE_CFLAGS) -c $< -o $@
-
-$(obj_dir)/%.o: $(common_dir)/%.c $(FIRMWARE_COMMON_DEPS)
-	@mkdir -p `dirname $@`
-	@echo " (CC)        $(subst $(obj_dir)/,,$@)"
-	@$(FW_CC) $(FW_CFLAGS) $(FIRMWARE_CFLAGS) -c $< -o $@
-
-$(obj_dir)/%.o: %.S $(FIRMWARE_COMMON_DEPS)
-	@mkdir -p `dirname $@`
-	@echo " (AS)        $(subst $(obj_dir)/,,$@)"
-	@$(FW_AS) $(FW_ASFLAGS) $(FIRMWARE_ASFLAGS) -c $< -o $@
-
-$(obj_dir)/%.o: $(common_dir)/%.S $(FIRMWARE_COMMON_DEPS)
-	@mkdir -p `dirname $@`
-	@echo " (AS)        $(subst $(obj_dir)/,,$@)"
-	@$(FW_AS) $(FW_ASFLAGS) $(FIRMWARE_ASFLAGS) -c $< -o $@
-
-.PHONY: clean
-clean:
-	@echo " (RM)        firmware.elf*"
-	@rm -f $(obj_dir)/firmware.elf*
-	@echo " (RM)        firmware.bin*"
-	@rm -f $(obj_dir)/firmware.bin*
-	@echo " (RM)        $(obj_dir)"
-	@rm -rf $(obj_dir)
-
+# Include common makefile for basic firmware
+include $(ARCH_BASIC_DIR)/Makefile.inc

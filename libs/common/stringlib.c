@@ -22,10 +22,12 @@
  * @brief implementation of string library
  */
 
+#include <vmm_error.h>
 #include <vmm_types.h>
 #include <vmm_host_io.h>
 #include <vmm_limits.h>
 #include <vmm_compiler.h>
+#include <vmm_stdio.h>
 #include <vmm_modules.h>
 #include <libs/ctype.h>
 #include <libs/stringlib.h>
@@ -149,6 +151,19 @@ int strcasecmp(const char *s1, const char *s2)
 		c2 = tolower(*s2++);
 	} while (c1 == c2 && c1 != 0);
 	return c1 - c2;
+}
+
+int strncasecmp(const char *a, const char *b, size_t n)
+{
+	if (n > 0) {
+		/* search first diff or end of string */
+		for (n--;
+		     n != 0 && tolower(*a) == tolower(*b) && *a != '\0';
+		     a++, b++, n--);
+		return tolower(*a) - tolower(*b);
+	}
+
+	return 0;
 }
 
 char *strchr(const char *s, int c)
@@ -633,6 +648,87 @@ char* strtok_r(char *str, const char *delim, char **context)
 	*context = str;
 
 	return ret;
+}
+
+int u64_to_size_str(u64 val, char *out, size_t out_len)
+{
+	const char *suffix = "";
+
+	if (!out || (out_len < 16))
+		return VMM_EINVALID;
+
+	if (val < SZ_1K) {
+		suffix = "B";
+		goto found;
+	}
+	val = val >> 10;
+
+	if (val < SZ_1K) {
+		suffix = "KB";
+		goto found;
+	}
+	val = val >> 10;
+
+	if (val < SZ_1K) {
+		suffix = "MB";
+		goto found;
+	}
+	val = val >> 10;
+
+	if (val < SZ_1K) {
+		suffix = "GB";
+		goto found;
+	}
+	val = val >> 10;
+
+	if (val < SZ_1K) {
+		suffix = "TB";
+		goto found;
+	}
+	val = val >> 10;
+
+	if (val < SZ_1K) {
+		suffix = "PB";
+		goto found;
+	}
+	val = val >> 10;
+
+	if (val < SZ_1K) {
+		suffix = "EB";
+		goto found;
+	}
+
+	suffix = "ZB";
+
+found:
+	vmm_snprintf(out, out_len, "%"PRIu64" %s", val, suffix);
+
+	return VMM_OK;
+}
+
+/**
+ * match_string - matches given string in an array
+ * @array:	array of strings
+ * @n:		number of strings in the array or -1 for NULL terminated arrays
+ * @string:	string to match with
+ *
+ * Return:
+ * index of a @string in the @array if matches, or %VMM_EINVALID otherwise.
+ */
+int match_string(const char * const *array, size_t n, const char *string)
+{
+	int index;
+	const char *item;
+
+	for (index = 0; index < n; index++) {
+		item = array[index];
+		if (!item)
+			break;
+		if (!strcmp(item, string))
+			return index;
+	}
+
+	return VMM_EINVALID;
 }
 
 /**

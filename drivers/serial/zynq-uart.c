@@ -44,6 +44,9 @@
 #define MODULE_INIT			zynq_uart_driver_init
 #define MODULE_EXIT			zynq_uart_driver_exit
 
+#define ZYNQ_UART_FIFO_TRIGGER 56
+#define ZYNQ_UART_FIFO_TOUT    10
+
 bool zynq_uart_lowlevel_can_getc(struct uart_zynq *regs)
 {
 	if ((vmm_readl((void*)&regs->channel_sts) & ZYNQ_UART_SR_RXEMPTY))
@@ -148,8 +151,10 @@ void zynq_uart_lowlevel_init(struct zynq_uart_priv *port)
 	/* 8 bit, no parity */
 	vmm_writel(ZYNQ_UART_MR_PARITY_NONE, &regs->mode);
 
-	/* Set baud rate here */
-	zynq_uart_setbrg(port);
+	if (!port->skip_baudrate_config) {
+		/* Set baud rate here */
+		zynq_uart_setbrg(port);
+	}
 }
 
 static vmm_irq_return_t zynq_uart_irq_handler(int irq_no, void *pdev)
@@ -163,7 +168,7 @@ static vmm_irq_return_t zynq_uart_irq_handler(int irq_no, void *pdev)
 	status = vmm_readl((void *)&regs->isr);
 
 	/* Handle RX interrupt */
-	if (status & ZYNQ_UART_ISR_RX) {
+	if (status & (ZYNQ_UART_ISR_RX_TOUT | ZYNQ_UART_ISR_RX)) {
 		/* Pull-out bytes from RX FIFO */
 		while (zynq_uart_lowlevel_can_getc(port->regs)) {
 			ch = zynq_uart_lowlevel_getc(port->regs);
@@ -177,8 +182,7 @@ static vmm_irq_return_t zynq_uart_irq_handler(int irq_no, void *pdev)
 	return VMM_IRQ_HANDLED;
 }
 
-static int zynq_uart_driver_probe(struct vmm_device *dev,
-				  const struct vmm_devtree_nodeid *devid)
+static int zynq_uart_driver_probe(struct vmm_device *dev)
 {
 	int rc;
 	struct zynq_uart_priv *port;
@@ -203,7 +207,9 @@ static int zynq_uart_driver_probe(struct vmm_device *dev,
 
 	rc = vmm_devtree_clock_frequency(dev->of_node, &port->input_clock);
 	if (rc) {
-		goto free_reg;
+		port->skip_baudrate_config = TRUE;
+	} else {
+		port->skip_baudrate_config = FALSE;
 	}
 
 	port->irq = vmm_devtree_irq_parse_map(dev->of_node, 0);
@@ -226,11 +232,20 @@ static int zynq_uart_driver_probe(struct vmm_device *dev,
 		goto free_irq;
 	}
 
+	/* set rx fifo trigger */
+	vmm_writel(ZYNQ_UART_FIFO_TRIGGER, &port->regs->rxtrig);
+
+	/* configure rx fifo timeout */
+	vmm_writel(ZYNQ_UART_FIFO_TOUT, &port->regs->rx_tout);
+
 	/* Save port pointer */
 	dev->priv = port;
 
-	/* Enable Rx Interrupt */
-	port->mask |= ZYNQ_UART_RX_ISR_EN;
+	/* clear all interrupts */
+	vmm_writel(vmm_readl((void *)&port->regs->isr), &port->regs->isr);
+
+	/* Unmask Rx and timeout Interrupt */
+	port->mask |= ZYNQ_UART_RX_ISR_EN | ZYNQ_UART_RX_ISR_TO_EN;
 	vmm_writel(port->mask, (void *)&port->regs->ie);
 
 	return VMM_OK;

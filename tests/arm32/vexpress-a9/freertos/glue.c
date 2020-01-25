@@ -24,12 +24,11 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
-#include <arm_io.h>
-#include <arm_irq.h>
+#include <arch_io.h>
 #include <arm_plat.h>
-#include <arm_board.h>
-#include <arm_timer.h>
-#include <arm_stdio.h>
+#include <arch_board.h>
+#include <basic_irq.h>
+#include <basic_stdio.h>
 
 extern void main_blinky(void);
 
@@ -43,27 +42,27 @@ void arm_mmu_data_abort(struct pt_regs *regs) {}
 static int timer_tick_handler(u32 irq, struct pt_regs *regs)
 {
         FreeRTOS_Tick_Handler();
-        arm_writel(1, (void *)(V2M_TIMER0 + TIMER_INTCLR));
+        arch_writel(1, (void *)(V2M_TIMER0 + TIMER_INTCLR));
         return 0;
 }
 
 /* configure the timer for FreeRTOS */
 void vConfigureTickInterrupt()
 {
-        arm_timer_init(configTICK_RATE_HZ);
+        arch_board_timer_init(configTICK_RATE_HZ);
 
         /* 'steal' interrupt handler */
-        arm_irq_register(IRQ_V2M_TIMER0, &timer_tick_handler);
+        basic_irq_register(IRQ_V2M_TIMER0, &timer_tick_handler);
 
-        arm_timer_enable();
+        arch_board_timer_enable();
 }
 
 #define MAX_IRQS 1024
 
 void vApplicationIRQHandler(u32 irq)
 {
-        extern arm_irq_handler_t irq_hndls[MAX_IRQS];
-        if (arm_board_pic_ack_irq(irq)) {
+        extern irq_handler_t irq_hndls[MAX_IRQS];
+        if (arch_board_pic_ack_irq(irq)) {
                 while (1)
                         ;
         }
@@ -83,7 +82,7 @@ void vAssertCalled(const char *pcFile, unsigned long ulLine)
 
         taskENTER_CRITICAL();
         {
-                arm_printf("%s: file=%s, line=%d!\n", __func__, pcFile, ulLine);
+                basic_printf("%s: file=%s, line=%d!\n", __func__, pcFile, (int)ulLine);
                 /* Set ul to a non-zero value using the debugger to
                 step out of this function. */
                 while (ul == 0) {
@@ -95,16 +94,16 @@ void vAssertCalled(const char *pcFile, unsigned long ulLine)
 
 void arm_init(void)
 {
-        arm_irq_disable();
-        arm_irq_setup();
-        arm_stdio_init();
+        basic_irq_disable();
+        basic_irq_setup();
+        basic_stdio_init();
 
         /* FreeRTOS will call vConfigureTickInterrupt and enable IRQs */
 }
 
 int arm_main(void)
 {
-        arm_puts("Welcome to FreeRTOS!\n");
+        basic_puts("Welcome to FreeRTOS!\n");
 
         main_blinky();
 

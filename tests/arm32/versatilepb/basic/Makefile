@@ -28,24 +28,28 @@ ifdef O
 else
  build_dir=$(top_dir)/build
 endif
+ifdef I
+ install_dir=$(shell readlink -f $(I))
+else
+ install_dir=$(top_dir)/install
+endif
 
 obj_dir=$(build_dir)/tests/arm32/versatilepb/basic
-common_dir=$(top_dir)/tests/arm32/common/basic
+basic_dir=$(top_dir)/tests/common/basic
+arch_dir=$(top_dir)/tests/arm32/common/basic
 
 board_arch       = v5
 board_text_start = 0x04000000
-board_objs       = $(obj_dir)/arm_board.o \
+board_objs       = $(obj_dir)/arch_board.o \
                    $(obj_dir)/pic/pl190.o \
                    $(obj_dir)/timer/sp804.o \
                    $(obj_dir)/serial/pl01x.o \
                    $(obj_dir)/sys/vminfo.o
-board_fdt_support = y
 
 board_cppflags   =
 board_cflags     =
 board_asflags    =
 board_ldflags    =
 
-# Include common makefile for basic firmware
-include $(common_dir)/Makefile.inc
-
+# Include common arch makefile for basic firmware
+include $(arch_dir)/Makefile.inc

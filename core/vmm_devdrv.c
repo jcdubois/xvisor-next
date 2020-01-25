@@ -130,13 +130,6 @@ static void deferred_probe_del(struct vmm_device *dev)
 	vmm_mutex_unlock(&ddctrl.deferred_probe_lock);
 }
 
-int __weak vmm_devdrv_pinctrl_bind(struct vmm_device *dev)
-{
-	/* Nothing to do here. */
-	/* The pinctrl framework will provide actual implementation */
-	return VMM_OK;
-}
-
 /* Note: Must be called with bus->lock held */
 static int __bus_probe_device_driver(struct vmm_bus *bus,
 				     struct vmm_device *dev,
@@ -180,7 +173,7 @@ static int __bus_probe_device_driver(struct vmm_bus *bus,
 			   "driver=\"%s\" probe.\n",
 			   bus->name, dev->name, dev->driver->name);
 #endif
-		rc = drv->probe(dev, NULL);
+		rc = drv->probe(dev);
 	}
 
 	if (rc) {
@@ -592,7 +585,8 @@ static int devdrv_class_register_device(struct vmm_class *cls,
 
 	/* Check duplicacy */
 	list_for_each_entry(d, &cls->device_list, class_head) {
-		if (strcmp(d->name, dev->name) == 0) {
+		if ((strcmp(d->name, dev->name) == 0) &&
+		    (d->parent == dev->parent)) {
 			found = TRUE;
 			break;
 		}
@@ -976,7 +970,8 @@ static int devdrv_bus_register_device(struct vmm_bus *bus,
 
 	/* Check duplicacy */
 	list_for_each_entry(d, &bus->device_list, bus_head) {
-		if (strcmp(d->name, dev->name) == 0) {
+		if ((strcmp(d->name, dev->name) == 0) &&
+		    (d->parent == dev->parent)) {
 			found = TRUE;
 			break;
 		}
@@ -1393,7 +1388,7 @@ void vmm_devdrv_initialize_device(struct vmm_device *dev)
 	/* Only initialize the private fields of device */
 	INIT_LIST_HEAD(&dev->bus_head);
 	INIT_LIST_HEAD(&dev->class_head);
-	arch_atomic_write(&dev->ref_count, 1);
+	xref_init(&dev->ref_count);
 	dev->is_registered = FALSE;
 	INIT_LIST_HEAD(&dev->child_head);
 	INIT_MUTEX(&dev->child_list_lock);
@@ -1410,22 +1405,16 @@ struct vmm_device *vmm_devdrv_ref_device(struct vmm_device *dev)
 	if (!dev) {
 		return NULL;
 	}
-
-	arch_atomic_inc(&dev->ref_count);
+	
+	xref_get(&dev->ref_count);
 	return dev;
 }
 
-void vmm_devdrv_dref_device(struct vmm_device *dev)
+static void __devdrv_device_free(struct xref *ref)
 {
 	bool released;
-
-	if (!dev) {
-		return;
-	}
-
-	if (arch_atomic_sub_return(&dev->ref_count, 1)) {
-		return;
-	}
+	struct vmm_device *dev =
+			container_of(ref, struct vmm_device, ref_count);
 
 	released = TRUE;
 	if (dev->release) {
@@ -1439,6 +1428,13 @@ void vmm_devdrv_dref_device(struct vmm_device *dev)
 	}
 
 	WARN_ON(!released);
+}
+
+void vmm_devdrv_dref_device(struct vmm_device *dev)
+{
+	if (dev) {
+		xref_put(&dev->ref_count, __devdrv_device_free);
+	}
 }
 
 bool vmm_devdrv_isregistered_device(struct vmm_device *dev)

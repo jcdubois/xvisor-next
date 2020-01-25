@@ -35,6 +35,7 @@
 #include <vmm_error.h>
 #include <vmm_delay.h>
 #include <vmm_cache.h>
+#include <vmm_pagepool.h>
 #include <vmm_host_io.h>
 #include <vmm_host_irq.h>
 #include <vmm_host_aspace.h>
@@ -303,7 +304,7 @@ static int sunxi_mmc_config_clock(struct sunxi_mmc_host *host, u32 div)
 	return VMM_OK;
 }
 
-static void sunxi_mmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
+static int sunxi_mmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 {
 	u32 clkdiv = 0;
 	struct sunxi_mmc_host* host = mmc_priv(mmc);
@@ -317,7 +318,7 @@ static void sunxi_mmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 				(ios->clock / 2));
 		if (sunxi_mmc_config_clock(host, clkdiv)) {
 			host->fatal_err = 1;
-			return;
+			return VMM_EIO;
 		}
 	}
 
@@ -329,6 +330,8 @@ static void sunxi_mmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	} else {
 		vmm_writel(0, &host->reg->width);
 	}
+
+	return 0;
 }
 
 static int sunxi_mmc_init_card(struct mmc_host *mmc, struct mmc_card *card)
@@ -675,8 +678,7 @@ static vmm_irq_return_t sunxi_mmc_irq_handler(int irq_no, void *dev)
 	return VMM_IRQ_HANDLED;
 }
 
-static int sunxi_mmc_driver_probe(struct vmm_device *dev,
-				  const struct vmm_devtree_nodeid *devid)
+static int sunxi_mmc_driver_probe(struct vmm_device *dev)
 {
 	int rc;
 	virtual_addr_t base;
@@ -739,7 +741,7 @@ static int sunxi_mmc_driver_probe(struct vmm_device *dev,
 	}
 	host->gpio = (struct sunxi_gpio_reg *)base;
 
-	base = vmm_host_alloc_pages(1, VMM_MEMORY_FLAGS_NORMAL);
+	base = vmm_pagepool_alloc(VMM_PAGEPOOL_NORMAL, 1);
 	if (!base) {
 		rc = VMM_ENOMEM;
 		goto free_gpio;
@@ -784,29 +786,31 @@ static int sunxi_mmc_driver_probe(struct vmm_device *dev,
 		goto free_irq;
 	}
 
-	/* Add MMC host */
+	/* Print mmc host banner */
+	vmm_devtree_regaddr(dev->of_node, &basepa, 0);
+	vmm_linfo(dev->name, "Sunxi MMC at 0x%08llx irq %d (%s)\n",
+		  (unsigned long long)basepa, host->irq,
+#ifdef SUNXI_USE_DMA
+		  "dma");
+#else
+		  "pio");
+#endif
+
+	/* Add mmc host */
 	rc = mmc_add_host(mmc);
 	if (rc) {
+		vmm_lerror(dev->name, "MMC add host failed (error %d)\n", rc);
 		goto free_irq;
 	}
 
 	dev->priv = mmc;
-
-	vmm_devtree_regaddr(dev->of_node, &basepa, 0);
-	vmm_printf("%s: Sunxi MMC at 0x%08llx irq %d (%s)\n",
-		   dev->name, (unsigned long long)basepa, host->irq,
-#ifdef SUNXI_USE_DMA
-		   "dma");
-#else
-		   "pio");
-#endif
 
 	return VMM_OK;
 
 free_irq:
 	vmm_host_irq_unregister(host->irq, mmc);
 free_pdes:
-	vmm_host_free_pages((virtual_addr_t)host->pdes, 1);
+	vmm_pagepool_free(VMM_PAGEPOOL_NORMAL, (virtual_addr_t)host->pdes, 1);
 free_gpio:
 	vmm_devtree_regunmap(dev->of_node, (virtual_addr_t)host->gpio, 4);
 free_pll5_cfg:
@@ -840,7 +844,7 @@ static int sunxi_mmc_driver_remove(struct vmm_device *dev)
 		/* Free resources */
 		vmm_host_irq_unregister(host->irq, mmc);
 		base = (virtual_addr_t)host->pdes;
-		vmm_host_free_pages(base, 1);
+		vmm_pagepool_free(VMM_PAGEPOOL_NORMAL, base, 1);
 		base = (virtual_addr_t)host->gpio;
 		vmm_devtree_regunmap(dev->of_node, base, 4);
 		base = (virtual_addr_t)host->pll5_cfg;

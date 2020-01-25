@@ -32,6 +32,7 @@
 #include <vmm_mutex.h>
 #include <vmm_notifier.h>
 #include <libs/list.h>
+#include <libs/xref.h>
 
 #define VMM_DMA_BIT_MASK(n) (((n) == 64) ? ~0ULL : ((1ULL<<(n))-1))
 
@@ -79,7 +80,7 @@ struct vmm_device {
 	/* Private fields (for device driver framework) */
 	struct dlist bus_head;
 	struct dlist class_head;
-	atomic_t ref_count;
+	struct xref ref_count;
 	bool is_registered;
 	struct dlist child_head;
 	struct vmm_mutex child_list_lock;
@@ -113,7 +114,7 @@ struct vmm_driver {
 	char name[VMM_FIELD_NAME_SIZE];
 	struct vmm_bus *bus;
 	const struct vmm_devtree_nodeid *match_table;
-	int (*probe) (struct vmm_device *, const struct vmm_devtree_nodeid *);
+	int (*probe) (struct vmm_device *);
 	int (*suspend) (struct vmm_device *, u32);
 	int (*resume) (struct vmm_device *);
 	int (*remove) (struct vmm_device *);
@@ -167,15 +168,6 @@ static inline int vmm_dma_set_mask(struct vmm_device *dev, u64 mask)
 	*dev->dma_mask = mask;
 	return VMM_OK;
 }
-
-/** Bind device pins
- *  Note: The device driver framework only provide dummy weak
- *  implementation of this function which does nothing.
- *  Note: The pinctrl framework will provide complete implementation
- *  of this function. If pinctrl framework is not available then
- *  this function will do nothing.
- */
-int vmm_devdrv_pinctrl_bind(struct vmm_device *dev);
 
 /** Register class */
 int vmm_devdrv_register_class(struct vmm_class *cls);

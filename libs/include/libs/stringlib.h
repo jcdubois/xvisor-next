@@ -61,6 +61,8 @@ int strncmp(const char *a, const char *b, size_t n);
 
 int strcasecmp(const char *s1, const char *s2);
 
+int strncasecmp(const char *a, const char *b, size_t n);
+
 char *strchr(const char *s, int c);
 
 char *strrchr(const char *s, int c);
@@ -112,6 +114,10 @@ size_t strspn(const char* s, const char* accept);
 size_t strcspn(const char *s, const char *reject);
 
 char* strtok_r(char *str, const char *delim, char **context);
+
+int u64_to_size_str(u64 val, char *out, size_t out_len);
+
+int match_string(const char * const *array, size_t n, const char *string);
 
 int sscanf(const char *buf, const char *fmt, ...);
 

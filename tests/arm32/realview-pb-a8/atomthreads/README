@@ -1,6 +1,6 @@
 		Atomthreads on Realview-PB-A8 Guest
 
-Atomthreads is a free, lightweight, portable, real-time scheduler for 
+Atomthreads is a free, lightweight, portable, real-time scheduler for
 embedded systems. Please visit: http://atomthreads.com/ for more details.
 
 The Realview-PB-A8 port of atomthreads is still not released officially, but
@@ -18,46 +18,42 @@ Guest with Xvisor running on QEMU Realview-PB-A8 Host:
   [2. GoTo Xvisor source directory]
   # cd <xvisor_source_directory>
 
-  [3. Initialize Xvisor submodules]
-  # git submodule init
-  # git submodule update
-  (Note: This is required to be done only once in freshly cloned xvisor source)
-
-  [4. Configure Xvisor with Generic v7 default settings]
+  [3. Configure Xvisor with Generic v7 default settings]
   # make ARCH=arm generic-v7-defconfig
 
-  [5. Build Xvisor]
-  # make; make dtbs
-
-  [6. Build Basic Firmware]
-  # make -C tests/arm32/realview-pb-a8/basic
-
-  [7. GoTo Atomthreads source directory]
-  # cd <atomthreads_source_directory>/ports/arm32
-
-  [8. Build Atomthreads]
+  [4. Build Xvisor & DTBs]
   # make
 
-  [9. Patch Atomthreads objects to replace sensitive non-priviledged instructions]
+  [5. Build Basic Firmware]
+  # make -C tests/arm32/realview-pb-a8/basic
+
+  [6. GoTo Atomthreads source directory]
+  # cd <atomthreads_source_directory>/ports/arm32
+
+  [7. Build Atomthreads]
+  # make
+
+  [8. Patch Atomthreads objects to replace sensitive non-priviledged instructions]
   # <xvisor_source_directory>/arch/arm/cpu/arm32/elf2cpatch.py -f build/arm_entry.o | <xvisor_source_directory>/build/tools/cpatch/cpatch32 build/arm_entry.o 0
   # <xvisor_source_directory>/arch/arm/cpu/arm32/elf2cpatch.py -f build/arm_irq.o | <xvisor_source_directory>/build/tools/cpatch/cpatch32 build/arm_irq.o 0
   # <xvisor_source_directory>/arch/arm/cpu/arm32/elf2cpatch.py -f build/atomport-asm.o | <xvisor_source_directory>/build/tools/cpatch/cpatch32 build/atomport-asm.o 0
 
-  [10. Rebuild Atomthreads to reflect changed object files]
+  [9. Rebuild Atomthreads to reflect changed object files]
   # make
 
-  [11. GoTo Xvisor source directory]
+  [10. GoTo Xvisor source directory]
   # cd <xvisor_source_directory>
 
-  [12. Create disk image for Xvisor]
+  [11. Create disk image for Xvisor]
   # mkdir -p ./build/disk/tmp
   # mkdir -p ./build/disk/system
   # cp -f ./docs/banner/roman.txt ./build/disk/system/banner.txt
   # cp -f ./docs/logo/xvisor_logo_name.ppm ./build/disk/system/logo.ppm
   # mkdir -p ./build/disk/images/arm32/realview-pb-a8
-  # ./build/tools/dtc/bin/dtc -I dts -O dtb -o ./build/disk/images/arm32/realview-pb-a8.dtb ./tests/arm32/realview-pb-a8/realview-pb-a8.dts
+  # dtc -q -I dts -O dtb -o ./build/disk/images/arm32/realview-pb-a8-guest.dtb ./tests/arm32/realview-pb-a8/realview-pb-a8-guest.dts
   # cp -f ./build/tests/arm32/realview-pb-a8/basic/firmware.bin.patched ./build/disk/images/arm32/realview-pb-a8/firmware.bin
   # cp -f ./tests/arm32/realview-pb-a8/atomthreads/nor_flash.list ./build/disk/images/arm32/realview-pb-a8/nor_flash.list
+  # cp -f ./tests/arm32/realview-pb-a8/xscript/one_guest_pb-a8.xscript ./build/disk/boot.xscript
   # cp -f <atomthreads_source_directory>/ports/arm32/build/kern1.bin ./build/disk/images/arm32/realview-pb-a8/kern1.bin
   # cp -f <atomthreads_source_directory>/ports/arm32/build/kern2.bin ./build/disk/images/arm32/realview-pb-a8/kern2.bin
   # cp -f <atomthreads_source_directory>/ports/arm32/build/kern3.bin ./build/disk/images/arm32/realview-pb-a8/kern3.bin
@@ -97,31 +93,31 @@ Guest with Xvisor running on QEMU Realview-PB-A8 Host:
   # cp -f <atomthreads_source_directory>/ports/arm32/build/timer5.bin ./build/disk/images/arm32/realview-pb-a8/timer5.bin
   # cp -f <atomthreads_source_directory>/ports/arm32/build/timer6.bin ./build/disk/images/arm32/realview-pb-a8/timer6.bin
   # cp -f <atomthreads_source_directory>/ports/arm32/build/timer7.bin ./build/disk/images/arm32/realview-pb-a8/timer7.bin
-  # genext2fs -B 1024 -b 16384 -d ./build/disk ./build/disk.img
+  # genext2fs -B 1024 -b 32768 -d ./build/disk ./build/disk.img
 
-  [13. Launch QEMU]
-  # qemu-system-arm -M realview-pb-a8 -m 512M -display none -serial stdio -kernel build/vmm.bin -dtb build/arch/arm/board/generic/dts/realview/pb-a8/one_guest_pb-a8.dtb -initrd build/disk.img
+  [12. Launch QEMU]
+  # qemu-system-arm -M realview-pb-a8 -m 512M -display none -serial stdio -kernel build/vmm.bin -dtb build/arch/arm/board/generic/dts/arm/arm-realview-pba8.dtb -initrd build/disk.img
 
-  [14. Kick Guest0 for starting Basic Firmware]
+  [13. Kick Guest0 for starting Basic Firmware]
   XVisor# guest kick guest0
 
-  [15. Bind to virtual UART]
+  [14. Bind to virtual UART]
   XVisor# vserial bind guest0/uart0
 
-  [16. Copy kern1.bin atomthreads test from NOR flash to DDR]
+  [15. Copy kern1.bin atomthreads test from NOR flash to DDR]
   [guest0/uart0] basic# copy 0x100000 0x40100000 0x20000
 
-  [17. Start atomthreads]
+  [16. Start atomthreads]
   [guest0/uart0] basic# go 0x100000
 
-  [18. Enter character seqence 'ESCAPE+x+q" return to Xvisor prompt]
-  [guest0/uart0] 
+  [17. Enter character seqence 'ESCAPE+x+q" return to Xvisor prompt]
+  [guest0/uart0]
 
   (Note: replace all <> brackets based on your workspace)
   (Note: some of the above steps will need to be adapted for other
    types of ARM host)
   (Note: for more info on your desired ARM host refer docs/arm/)
-  (Note: step 15 copies kern1.bin test case to 0x100000 instead of this you 
+  (Note: step 15 copies kern1.bin test case to 0x100000 instead of this you
    can use kern2.bin, ..., mutex1.bin, ..., etc. testcases. All testcases are
    loaded to NOR flash location 0x40100000 at 0x20000 offset. All testcases are
    compiled for 0x100000 location so you have to copy them to same location and

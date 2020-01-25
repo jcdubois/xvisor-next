@@ -337,12 +337,7 @@ static int imx_reg_read(struct imx_state *s, u32 offset, u32 *dst, int nb)
 
 static void imx_set_txirq(struct imx_state *s, int level)
 {
-	u32 irq = s->txirq;
-
-	if (!irq) {
-		irq = s->rdirq;
-	}
-	vmm_devemu_emulate_irq(s->guest, irq, level);
+	vmm_devemu_emulate_irq(s->guest, s->txirq, level);
 }
 
 static int imx_reg_write(struct imx_state *s, u32 offset,
@@ -582,14 +577,19 @@ static int imx_emulator_probe(struct vmm_guest *guest,
 	INIT_SPIN_LOCK(&s->lock);
 	s->data = eid->data;
 
-	rc = vmm_devtree_irq_get(edev->node, &s->rdirq, 0);
+	rc = vmm_devtree_read_u32_atindex(edev->node,
+					  VMM_DEVTREE_INTERRUPTS_ATTR_NAME,
+					  &s->rdirq, 0);
 	if (rc) {
 		goto imx_emulator_probe_freestate_fail;
 	}
 
-	rc = vmm_devtree_irq_get(edev->node, &s->txirq, 0);
+	rc = vmm_devtree_read_u32_atindex(edev->node,
+					  VMM_DEVTREE_INTERRUPTS_ATTR_NAME,
+					  &s->txirq, 1);
 	if (rc) {
-		s->txirq = 0;
+		rc = VMM_OK;
+		s->txirq = s->rdirq;
 	}
 
 	s->rd_fifo = fifo_alloc(1, IMX_FIFO_SIZE);

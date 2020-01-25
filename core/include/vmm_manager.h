@@ -6,12 +6,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
@@ -31,6 +31,7 @@
 #include <vmm_spinlocks.h>
 #include <vmm_devtree.h>
 #include <vmm_cpumask.h>
+#include <vmm_shmem.h>
 #include <libs/list.h>
 #include <libs/rbtree.h>
 
@@ -43,47 +44,66 @@ enum vmm_region_flags {
 	VMM_REGION_CACHEABLE=0x00000020,
 	VMM_REGION_BUFFERABLE=0x00000040,
 	VMM_REGION_READONLY=0x00000080,
-	VMM_REGION_ISHOSTRAM=0x00000100,
-	VMM_REGION_ISRAM=0x00000200,
-	VMM_REGION_ISROM=0x00000400,
-	VMM_REGION_ISDEVICE=0x00000800,
-	VMM_REGION_ISRESERVED=0x00001000,
-	VMM_REGION_ISALLOCED=0x00002000,
-	VMM_REGION_ISDYNAMIC=0x00004000,
+	VMM_REGION_ISRAM=0x00000100,
+	VMM_REGION_ISROM=0x00000200,
+	VMM_REGION_ISDEVICE=0x00000400,
+	VMM_REGION_ISRESERVED=0x00000800,
+	VMM_REGION_ISALLOCED=0x00001000,
+	VMM_REGION_ISCOLORED=0x00002000,
+	VMM_REGION_ISSHARED=0x00004000,
+	VMM_REGION_ISDYNAMIC=0x00008000,
 };
 
 #define VMM_REGION_MANIFEST_MASK	(VMM_REGION_REAL | \
 					 VMM_REGION_VIRTUAL | \
 					 VMM_REGION_ALIAS)
 
+enum vmm_region_mapping_flags {
+	VMM_REGION_MAPPING_ISHOSTRAM=0x00000001,
+};
+
 struct vmm_region;
+struct vmm_region_mapping;
 struct vmm_guest_aspace;
 struct vmm_vcpu_irqs;
 struct vmm_vcpu;
 struct vmm_guest;
+
+struct vmm_region_mapping {
+	physical_addr_t hphys_addr;
+	u32 flags;
+};
 
 struct vmm_region {
 	struct rb_node head;
 	struct dlist phead;
 	struct vmm_devtree_node *node;
 	struct vmm_guest_aspace *aspace;
-	physical_addr_t gphys_addr;
-	physical_addr_t hphys_addr;
-	physical_size_t phys_size;
-	u32 align_order;
 	u32 flags;
+	physical_addr_t gphys_addr;
+	physical_addr_t aphys_addr;
+	physical_size_t phys_size;
+	u32 first_color;
+	u32 num_colors;
+	struct vmm_shmem *shm;
+	u32 align_order;
+	u32 map_order;
+	u32 maps_count;
+	struct vmm_region_mapping *maps;
 	void *devemu_priv;
 	void *priv;
 };
 
+#define VMM_REGION_NAME(reg)		((reg)->node->name)
 #define VMM_REGION_GPHYS_START(reg)	((reg)->gphys_addr)
 #define VMM_REGION_GPHYS_END(reg)	((reg)->gphys_addr + (reg)->phys_size)
-#define VMM_REGION_HPHYS_START(reg)	((reg)->hphys_addr)
-#define VMM_REGION_HPHYS_END(reg)	((reg)->hphys_addr + (reg)->phys_size)
-#define VMM_REGION_GPHYS_TO_HPHYS(reg, gphys)	\
-			((reg)->hphys_addr + ((gphys) - (reg)->gphys_addr))
-#define VMM_REGION_HPHYS_TO_GPHYS(reg, hphys)	\
-			((reg)->gphys_addr + ((hphys) - (reg)->hphys_addr))
+#define VMM_REGION_PHYS_SIZE(reg)	((reg)->phys_size)
+#define VMM_REGION_GPHYS_TO_APHYS(reg, gphys)	\
+			((reg)->aphys_addr + ((gphys) - (reg)->gphys_addr))
+#define VMM_REGION_FLAGS(reg)		((reg)->flags)
+#define VMM_REGION_ALIGN_ORDER(reg)	((reg)->align_order)
+#define VMM_REGION_MAP_ORDER(reg)	((reg)->map_order)
+#define VMM_REGION_MAPS_COUNT(reg)	((reg)->maps_count)
 
 struct vmm_guest_aspace {
 	struct vmm_devtree_node *node;
@@ -115,6 +135,7 @@ struct vmm_vcpu_irqs {
 	atomic_t execute_pending;
 	atomic64_t assert_count;
 	atomic64_t execute_count;
+	atomic64_t clear_count;
 	atomic64_t deassert_count;
 	struct {
 		vmm_spinlock_t lock;
@@ -209,6 +230,7 @@ struct vmm_vcpu {
 	u64 state_running_nsecs;
 	u64 state_paused_nsecs;
 	u64 state_halted_nsecs;
+	u64 system_nsecs;
 	u32 reset_count;
 	u64 reset_tstamp;
 	u32 preempt_count;
@@ -232,10 +254,13 @@ struct vmm_vcpu {
 	vmm_spinlock_t res_lock;
 	struct dlist res_head;
 
-	/* Waitqueue parameters */
+	/* Waitqueue context */
 	struct dlist wq_head;
 	vmm_spinlock_t *wq_lock;
 	void *wq_priv;
+
+	/* Waitqueue cleanup callback */
+	void (*wq_cleanup)(struct vmm_vcpu *);
 };
 
 /** Acquire manager lock */
@@ -258,18 +283,6 @@ struct vmm_vcpu *vmm_manager_vcpu(u32 vcpu_id);
 /** Iterate over each VCPU with manager lock held */
 int vmm_manager_vcpu_iterate(int (*iter)(struct vmm_vcpu *, void *),
 			     void *priv);
-
-/** Retrive general VCPU statistics */
-int vmm_manager_vcpu_stats(struct vmm_vcpu *vcpu,
-			   u32 *state,
-			   u8  *priority,
-			   u32 *hcpu,
-			   u32 *reset_count,
-			   u64 *last_reset_nsecs,
-			   u64 *ready_nsecs,
-			   u64 *running_nsecs,
-			   u64 *paused_nsecs,
-			   u64 *halted_nsecs);
 
 /** Retriver VCPU state */
 u32 vmm_manager_vcpu_get_state(struct vmm_vcpu *vcpu);
@@ -317,7 +330,7 @@ int vmm_manager_vcpu_hcpu_resched(struct vmm_vcpu *vcpu);
 int vmm_manager_vcpu_hcpu_func(struct vmm_vcpu *vcpu,
 			       u32 state_mask,
 			       void (*func)(struct vmm_vcpu *, void *),
-			       void *data);
+			       void *data, bool use_async);
 
 /** Retrive host CPU affinity of given VCPU */
 const struct vmm_cpumask *vmm_manager_vcpu_get_affinity(struct vmm_vcpu *vcpu);
@@ -336,12 +349,13 @@ int vmm_manager_vcpu_resource_remove(struct vmm_vcpu *vcpu,
 
 /** Create an orphan VCPU */
 struct vmm_vcpu *vmm_manager_vcpu_orphan_create(const char *name,
-					    virtual_addr_t start_pc,
-					    virtual_size_t stack_sz,
-					    u8 priority,
-					    u64 time_slice_nsecs,
-					    u64 deadline,
-					    u64 periodicity);
+					virtual_addr_t start_pc,
+					virtual_size_t stack_sz,
+					u8 priority,
+					u64 time_slice_nsecs,
+					u64 deadline,
+					u64 periodicity,
+					const struct vmm_cpumask *affinity);
 
 /** Destroy an orphan VCPU */
 int vmm_manager_vcpu_orphan_destroy(struct vmm_vcpu *vcpu);

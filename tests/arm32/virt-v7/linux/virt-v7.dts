@@ -14,39 +14,26 @@
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
+	};
 
-		cpu@0 {
-			device_type = "cpu";
-			compatible = "arm,cortex-a15";
-			reg = <0x0>;
-			enable-method = "psci";
-		};
-		cpu@1 {
-			device_type = "cpu";
-			compatible = "arm,cortex-a15";
-			reg = <0x1>;
-			enable-method = "psci";
-		};
-		cpu@2 {
-			device_type = "cpu";
-			compatible = "arm,cortex-a15";
-			reg = <0x2>;
-			enable-method = "psci";
-		};
-		cpu@3 {
-			device_type = "cpu";
-			compatible = "arm,cortex-a15";
-			reg = <0x3>;
-			enable-method = "psci";
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		SHMEM0: shmem@38000000 {
+			compatible = "shared-dma-pool";
+			no-map;
+			reg = <0x0 0x38000000 0x0 0x01000000>;
 		};
 	};
 
-	memory@80000000 {
+	memory@40000000 {
 		device_type = "memory";
 		reg = <0x00000000 0x40000000 0 0x06000000>;
 	};
 
-	gic: intc {
+	gic: interrupt-controller@8000000 {
 		compatible = "arm,cortex-a15-gic";
 		#interrupt-cells = <3>;
 		#address-cells = <0>;
@@ -72,7 +59,14 @@
 		migrate = <0x84000005>;
 	};
 
-	UARTCLK: apb-pclk {
+	clk32khz: clk32khz {
+		compatible = "fixed-clock";
+		#clock-cells = <0x0>;
+		clock-frequency = <32000>;
+		clock-output-names = "clk32khz";
+	};
+
+	clk24mhz: clk24mhz {
 		compatible = "fixed-clock";
 		#clock-cells = <0x0>;
 		clock-frequency = <24000000>;
@@ -85,30 +79,63 @@
 		#size-cells = <2>;
 		ranges;
 
-		pl011@09000000 {
+		pl011@9000000 {
 			compatible = "arm,pl011", "arm,primecell";
 			reg = <0x0 0x09000000 0x0 0x1000>;
 			interrupts = <0 1 4>;
-			clocks = <&UARTCLK>, <&UARTCLK>;
+			clocks = <&clk24mhz>, <&clk24mhz>;
 			clock-names = "uartclk", "apb_pclk";
 		};
 
-		virtio_net@0A000000 {
+		rtc@9003000 {
+			compatible = "arm,pl031", "arm,primecell";
+			reg = <0x0 0x09003000 0x0 0x1000>;
+			interrupts = <0 2 4>;
+			clocks = <&clk24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		wdt@9004000 {
+			compatible = "arm,sp805", "arm,primecell";
+			reg = <0x0 0x09004000 0x0 0x1000>;
+			interrupts = <0 3 4>;
+			clocks = <&clk32khz>, <&clk24mhz>;
+			clock-names = "wdogclk", "apb_pclk";
+		};
+
+		virtio_net@a000000 {
 			compatible = "virtio,mmio";
 			reg = <0x0 0x0A000000 0x0 0x1000>;
 			interrupts = <0 16 4>;
+			dma-coherent;
 		};
 
-		virtio_block@0A001000 {
+		virtio_block@a001000 {
 			compatible = "virtio,mmio";
 			reg = <0x0 0x0A001000 0x0 0x1000>;
 			interrupts = <0 17 4>;
+			dma-coherent;
 		};
 
-		virtio_console@0A002000 {
+		virtio_console@a002000 {
 			compatible = "virtio,mmio";
 			reg = <0x0 0x0A002000 0x0 0x1000>;
 			interrupts = <0 18 4>;
+			dma-coherent;
+		};
+
+		virtio_rpmsg@a003000 {
+			compatible = "virtio,mmio";
+			reg = <0x0 0x0A003000 0x0 0x1000>;
+			interrupts = <0 19 4>;
+			dma-coherent;
+		};
+
+		virtio_input@a004000 {
+			compatible = "virtio,mmio";
+			reg = <0x0 0x0A004000 0x0 0x1000>;
+			interrupts = <0 20 4>;
+			dma-coherent;
 		};
 
 		simplefb@30000000 {
@@ -118,6 +145,15 @@
 			height = <768>;
 			stride = <2048>;
 			format = "r5g6b5";
+		};
+
+		shmem0 {
+			compatible = "ikwzm,udmabuf-0.10.a";
+			device-name = "shmem0";
+			minor-number = <0>;
+			size = <0x01000000>;
+			memory-region = <&SHMEM0>;
+			dma-coherent;
 		};
 	};
 };

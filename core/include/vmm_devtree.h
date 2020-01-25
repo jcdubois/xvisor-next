@@ -29,8 +29,8 @@
 #include <vmm_compiler.h>
 #include <vmm_types.h>
 #include <vmm_spinlocks.h>
-#include <arch_atomic.h>
 #include <libs/list.h>
+#include <libs/xref.h>
 
 #define VMM_DEVTREE_PATH_SEPARATOR		'/'
 #define VMM_DEVTREE_PATH_SEPARATOR_STRING	"/"
@@ -42,9 +42,14 @@
 #define VMM_DEVTREE_DEVICE_TYPE_VAL_VCPU	"vcpu"
 #define VMM_DEVTREE_DEVICE_TYPE_VAL_RAM		"ram"
 #define VMM_DEVTREE_DEVICE_TYPE_VAL_ALLOCED_RAM	"alloced_ram"
+#define VMM_DEVTREE_DEVICE_TYPE_VAL_COLORED_RAM	"colored_ram"
+#define VMM_DEVTREE_DEVICE_TYPE_VAL_SHARED_RAM	"shared_ram"
 #define VMM_DEVTREE_DEVICE_TYPE_VAL_ROM		"rom"
 #define VMM_DEVTREE_DEVICE_TYPE_VAL_ALLOCED_ROM	"alloced_rom"
+#define VMM_DEVTREE_DEVICE_TYPE_VAL_COLORED_ROM	"colored_rom"
+#define VMM_DEVTREE_DEVICE_TYPE_VAL_SHARED_ROM	"shared_rom"
 #define VMM_DEVTREE_COMPATIBLE_ATTR_NAME	"compatible"
+#define VMM_DEVTREE_DMA_COHERENT_ATTR_NAME	"dma-coherent"
 #define VMM_DEVTREE_CLOCK_FREQ_ATTR_NAME	"clock-frequency"
 #define VMM_DEVTREE_CLOCKS_ATTR_NAME		"clocks"
 #define VMM_DEVTREE_CLOCK_NAMES_ATTR_NAME	"clock-names"
@@ -63,6 +68,7 @@
 
 #define VMM_DEVTREE_CHOSEN_NODE_NAME		"chosen"
 #define VMM_DEVTREE_CONSOLE_ATTR_NAME		"console"
+#define VMM_DEVTREE_STDOUT_ATTR_NAME		"stdout-path"
 #define VMM_DEVTREE_RTCDEV_ATTR_NAME		"rtcdev"
 #define VMM_DEVTREE_BOOTARGS_ATTR_NAME		"bootargs"
 #define VMM_DEVTREE_BOOTCMD_ATTR_NAME		"bootcmd"
@@ -77,6 +83,8 @@
 #define VMM_DEVTREE_MEMORY_PHYS_ADDR_ATTR_NAME	"physical_addr"
 #define VMM_DEVTREE_MEMORY_PHYS_SIZE_ATTR_NAME	"physical_size"
 
+#define VMM_DEVTREE_RESERVED_MEMORY_NODE_NAME	"reserved-memory"
+
 #define VMM_DEVTREE_CPUS_NODE_NAME		"cpus"
 #define VMM_DEVTREE_INTERRUPTS_ATTR_NAME	"interrupts"
 #define VMM_DEVTREE_ENABLE_METHOD_ATTR_NAME	"enable-method"
@@ -85,6 +93,7 @@
 
 #define VMM_DEVTREE_GUESTINFO_NODE_NAME		"guests"
 #define VMM_DEVTREE_VCPUS_NODE_NAME		"vcpus"
+#define VMM_DEVTREE_VCPU_TEMPLATE_NODE_NAME	"vcpu_template"
 #define VMM_DEVTREE_ENDIANNESS_ATTR_NAME	"endianness"
 #define VMM_DEVTREE_ENDIANNESS_VAL_BIG		"big"
 #define VMM_DEVTREE_ENDIANNESS_VAL_LITTLE	"little"
@@ -107,11 +116,19 @@
 #define VMM_DEVTREE_ALIAS_PHYS_ATTR_NAME	"alias_physical_addr"
 #define VMM_DEVTREE_PHYS_SIZE_ATTR_NAME		"physical_size"
 #define VMM_DEVTREE_ALIGN_ORDER_ATTR_NAME	"align_order"
+#define VMM_DEVTREE_FIRST_COLOR_ATTR_NAME	"first_color"
+#define VMM_DEVTREE_NUM_COLORS_ATTR_NAME	"num_colors"
+#define VMM_DEVTREE_SHARED_MEM_ATTR_NAME	"shared_mem"
+#define VMM_DEVTREE_MAP_ORDER_ATTR_NAME		"map_order"
 #define VMM_DEVTREE_SWITCH_ATTR_NAME		"switch"
+#define VMM_DEVTREE_DOMAIN_ATTR_NAME		"domain"
+#define VMM_DEVTREE_NODE_ADDR_ATTR_NAME		"node_addr"
+#define VMM_DEVTREE_NODE_NS_NAME_ATTR_NAME	"node_ns_name"
 #define VMM_DEVTREE_BLKDEV_ATTR_NAME		"blkdev"
 #define VMM_DEVTREE_VCPU_AFFINITY_ATTR_NAME	"affinity"
 #define VMM_DEVTREE_VCPU_POWEROFF_ATTR_NAME	"poweroff"
 #define VMM_DEVTREE_NO_CHILD_PROBE_ATTR_NAME	"no-child-probe"
+#define VMM_DEVTREE_THREADS_AFFINITY_ATTR_NAME	"threads_affinity"
 
 enum vmm_devtree_attrypes {
 	VMM_DEVTREE_ATTRTYPE_UINT32	= 0,
@@ -178,7 +195,7 @@ struct vmm_devtree_node {
 	struct dlist attr_list;
 	vmm_rwlock_t child_lock;
 	struct dlist child_list;
-	atomic_t ref_count;
+	struct xref ref_count;
 	/* Public fields */
 	char name[VMM_FIELD_SHORT_NAME_SIZE];
 	struct vmm_devtree_node *parent;
@@ -575,7 +592,7 @@ int vmm_devtree_count_phandle_with_args(const struct vmm_devtree_node *node,
 					const char *cells_name);
 
 /** Increase reference count of give node */
-void vmm_devtree_ref_node(struct vmm_devtree_node *node);
+struct vmm_devtree_node *vmm_devtree_ref_node(struct vmm_devtree_node *node);
 
 /** De-refernce a device tree node */
 void vmm_devtree_dref_node(struct vmm_devtree_node *node);
@@ -635,12 +652,6 @@ int vmm_devtree_delnode(struct vmm_devtree_node *node);
  */
 int vmm_devtree_clock_frequency(struct vmm_devtree_node *node,
 				u32 *clock_freq);
-
-/** Get device irq number
- *  NOTE: This is based on 'irq' attribute of device tree node
- */
-int vmm_devtree_irq_get(struct vmm_devtree_node *node,
-		        u32 *irq, int index);
 
 /** Get count of device irqs
  *  NOTE: This is based on 'irq' attribute of device tree node
@@ -761,6 +772,12 @@ int vmm_devtree_regunmap_release(struct vmm_devtree_node *node,
 
 /** Check whether device registers are big endian */
 bool vmm_devtree_is_reg_big_endian(struct vmm_devtree_node *node);
+
+/** Check whether device is DMA cache-coherent */
+bool vmm_devtree_is_dma_coherent(struct vmm_devtree_node *node);
+
+/** Initialize device tree based reserved-memory */
+int vmm_devtree_reserved_memory_init(void);
 
 /** Count number of enteries in nodeid table */
 u32 vmm_devtree_nidtbl_count(void);

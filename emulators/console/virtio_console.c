@@ -6,12 +6,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
@@ -27,17 +27,16 @@
 #include <vmm_modules.h>
 #include <vmm_devemu.h>
 #include <vio/vmm_vserial.h>
+#include <vio/vmm_virtio.h>
+#include <vio/vmm_virtio_console.h>
 #include <libs/fifo.h>
 #include <libs/stringlib.h>
-
-#include <emu/virtio.h>
-#include <emu/virtio_console.h>
 
 #define MODULE_DESC			"VirtIO Console Emulator"
 #define MODULE_AUTHOR			"Anup Patel"
 #define MODULE_LICENSE			"GPL"
 #define MODULE_IPRIORITY		(VMM_VSERIAL_IPRIORITY + \
-					 VIRTIO_IPRIORITY + 1)
+					 VMM_VIRTIO_IPRIORITY + 1)
 #define MODULE_INIT			virtio_console_init
 #define MODULE_EXIT			virtio_console_exit
 
@@ -49,32 +48,33 @@
 #define VIRTIO_CONSOLE_VSERIAL_FIFO_SZ	1024
 
 struct virtio_console_dev {
-	struct virtio_device *vdev;
+	struct vmm_virtio_device *vdev;
 
-	struct virtio_queue vqs[VIRTIO_CONSOLE_NUM_QUEUES];
-	struct virtio_iovec rx_iov[VIRTIO_CONSOLE_QUEUE_SIZE];
-	struct virtio_iovec tx_iov[VIRTIO_CONSOLE_QUEUE_SIZE];
-	struct virtio_console_config config;
-	u32 features;
+	struct vmm_virtio_queue vqs[VIRTIO_CONSOLE_NUM_QUEUES];
+	struct vmm_virtio_iovec rx_iov[VIRTIO_CONSOLE_QUEUE_SIZE];
+	struct vmm_virtio_iovec tx_iov[VIRTIO_CONSOLE_QUEUE_SIZE];
+	struct vmm_virtio_console_config config;
+	u64 features;
 
-	char name[VIRTIO_DEVICE_MAX_NAME_LEN];
+	char name[VMM_VIRTIO_DEVICE_MAX_NAME_LEN];
 	struct vmm_vserial *vser;
 	struct fifo *emerg_rd;
 };
 
-static u32 virtio_console_get_host_features(struct virtio_device *dev)
+static u64 virtio_console_get_host_features(struct vmm_virtio_device *dev)
 {
 	/* We support emergency write. */
-	return 1UL << VIRTIO_CONSOLE_F_EMERG_WRITE;
+	return 1UL << VMM_VIRTIO_RING_F_EVENT_IDX
+		| 1UL << VMM_VIRTIO_CONSOLE_F_EMERG_WRITE;
 }
 
-static void virtio_console_set_guest_features(struct virtio_device *dev,
-					  u32 features)
+static void virtio_console_set_guest_features(struct vmm_virtio_device *dev,
+					      u32 select, u32 features)
 {
 	/* No host features so, ignore it. */
 }
 
-static int virtio_console_init_vq(struct virtio_device *dev,
+static int virtio_console_init_vq(struct vmm_virtio_device *dev,
 				  u32 vq, u32 page_size, u32 align, u32 pfn)
 {
 	int rc;
@@ -83,7 +83,7 @@ static int virtio_console_init_vq(struct virtio_device *dev,
 	switch (vq) {
 	case VIRTIO_CONSOLE_RX_QUEUE:
 	case VIRTIO_CONSOLE_TX_QUEUE:
-		rc = virtio_queue_setup(&cdev->vqs[vq], dev->guest, 
+		rc = vmm_virtio_queue_setup(&cdev->vqs[vq], dev->guest,
 			pfn, page_size, VIRTIO_CONSOLE_QUEUE_SIZE, align);
 		break;
 	default:
@@ -94,7 +94,7 @@ static int virtio_console_init_vq(struct virtio_device *dev,
 	return rc;
 }
 
-static int virtio_console_get_pfn_vq(struct virtio_device *dev, u32 vq)
+static int virtio_console_get_pfn_vq(struct vmm_virtio_device *dev, u32 vq)
 {
 	int rc;
 	struct virtio_console_dev *cdev = dev->emu_data;
@@ -102,7 +102,7 @@ static int virtio_console_get_pfn_vq(struct virtio_device *dev, u32 vq)
 	switch (vq) {
 	case VIRTIO_CONSOLE_RX_QUEUE:
 	case VIRTIO_CONSOLE_TX_QUEUE:
-		rc = virtio_queue_guest_pfn(&cdev->vqs[vq]);
+		rc = vmm_virtio_queue_guest_pfn(&cdev->vqs[vq]);
 		break;
 	default:
 		rc = VMM_EINVALID;
@@ -112,7 +112,7 @@ static int virtio_console_get_pfn_vq(struct virtio_device *dev, u32 vq)
 	return rc;
 }
 
-static int virtio_console_get_size_vq(struct virtio_device *dev, u32 vq)
+static int virtio_console_get_size_vq(struct vmm_virtio_device *dev, u32 vq)
 {
 	int rc;
 
@@ -129,43 +129,55 @@ static int virtio_console_get_size_vq(struct virtio_device *dev, u32 vq)
 	return rc;
 }
 
-static int virtio_console_set_size_vq(struct virtio_device *dev, u32 vq, int size)
+static int virtio_console_set_size_vq(struct vmm_virtio_device *dev,
+				      u32 vq, int size)
 {
 	/* FIXME: dynamic */
 	return size;
 }
 
-static int virtio_console_do_tx(struct virtio_device *dev,
+static int virtio_console_do_tx(struct vmm_virtio_device *dev,
 				struct virtio_console_dev *cdev)
 {
+	int rc;
 	u8 buf[8];
 	u16 head = 0;
 	u32 i, len, iov_cnt = 0, total_len = 0;
-	struct virtio_queue *vq = &cdev->vqs[VIRTIO_CONSOLE_TX_QUEUE];
-	struct virtio_iovec *iov = cdev->tx_iov;
-	struct virtio_iovec tiov;
+	struct vmm_virtio_queue *vq = &cdev->vqs[VIRTIO_CONSOLE_TX_QUEUE];
+	struct vmm_virtio_iovec *iov = cdev->tx_iov;
+	struct vmm_virtio_iovec tiov;
 
-	while (virtio_queue_available(vq)) {
-		head = virtio_queue_get_iovec(vq, iov, &iov_cnt, &total_len);
+	while (vmm_virtio_queue_available(vq)) {
+		rc = vmm_virtio_queue_get_iovec(vq, iov,
+						&iov_cnt, &total_len, &head);
+		if (rc) {
+			vmm_printf("%s: failed to get iovec (error %d)\n",
+				   __func__, rc);
+			continue;
+		}
 
 		for (i = 0; i < iov_cnt; i++) {
 			memcpy(&tiov, &iov[i], sizeof(tiov));
 			while (tiov.len) {
-				len = virtio_iovec_to_buf_read(dev, &tiov, 1,
-								&buf, sizeof(buf));
+				len = vmm_virtio_iovec_to_buf_read(dev, &tiov,
+							1, &buf, sizeof(buf));
 				vmm_vserial_receive(cdev->vser, buf, len);
 				tiov.addr += len;
 				tiov.len -= len;
 			}
 		}
 
-		virtio_queue_set_used_elem(vq, head, total_len);
+		vmm_virtio_queue_set_used_elem(vq, head, total_len);
+	}
+
+	if (vmm_virtio_queue_should_signal(vq)) {
+		dev->tra->notify(dev, VIRTIO_CONSOLE_TX_QUEUE);
 	}
 
 	return VMM_OK;
 }
 
-static int virtio_console_notify_vq(struct virtio_device *dev, u32 vq)
+static int virtio_console_notify_vq(struct vmm_virtio_device *dev, u32 vq)
 {
 	int rc = VMM_OK;
 	struct virtio_console_dev *cdev = dev->emu_data;
@@ -184,6 +196,12 @@ static int virtio_console_notify_vq(struct virtio_device *dev, u32 vq)
 	return rc;
 }
 
+static void virtio_console_status_changed(struct vmm_virtio_device *dev,
+					  u32 new_status)
+{
+	/* Nothing to do here. */
+}
+
 static bool virtio_console_vserial_can_send(struct vmm_vserial *vser)
 {
 	/* We always return TRUE because we always queue
@@ -197,23 +215,31 @@ static bool virtio_console_vserial_can_send(struct vmm_vserial *vser)
 
 static int virtio_console_vserial_send(struct vmm_vserial *vser, u8 data)
 {
+	int rc;
 	u16 head = 0;
 	u32 iov_cnt = 0, total_len = 0;
 	struct virtio_console_dev *cdev = vmm_vserial_priv(vser);
-	struct virtio_queue *vq = &cdev->vqs[VIRTIO_CONSOLE_RX_QUEUE];
-	struct virtio_iovec *iov = cdev->rx_iov;
-	struct virtio_device *dev = cdev->vdev;
+	struct vmm_virtio_queue *vq = &cdev->vqs[VIRTIO_CONSOLE_RX_QUEUE];
+	struct vmm_virtio_iovec *iov = cdev->rx_iov;
+	struct vmm_virtio_device *dev = cdev->vdev;
 
 	fifo_enqueue(cdev->emerg_rd, &data, TRUE);
 
-	if (virtio_queue_available(vq)) {
-		head = virtio_queue_get_iovec(vq, iov, &iov_cnt, &total_len);
+	if (vmm_virtio_queue_available(vq)) {
+		rc = vmm_virtio_queue_get_iovec(vq, iov,
+						&iov_cnt, &total_len, &head);
+		if (rc) {
+			vmm_printf("%s: failed to get iovec (error %d)\n",
+				   __func__, rc);
+			return rc;
+		}
 		if (iov_cnt) {
-			virtio_buf_to_iovec_write(dev, &iov[0], 1, &data, 1);
+			vmm_virtio_buf_to_iovec_write(dev, &iov[0], 1,
+						      &data, 1);
 
-			virtio_queue_set_used_elem(vq, head, 1);
+			vmm_virtio_queue_set_used_elem(vq, head, 1);
 
-			if (virtio_queue_should_signal(vq)) {
+			if (vmm_virtio_queue_should_signal(vq)) {
 				dev->tra->notify(dev, VIRTIO_CONSOLE_RX_QUEUE);
 			}
 		}
@@ -222,14 +248,14 @@ static int virtio_console_vserial_send(struct vmm_vserial *vser, u8 data)
 	return VMM_OK;
 }
 
-static int virtio_console_read_config(struct virtio_device *dev, 
+static int virtio_console_read_config(struct vmm_virtio_device *dev,
 				      u32 offset, void *dst, u32 dst_len)
 {
 	struct virtio_console_dev *cdev = dev->emu_data;
 	u8 data8, *src = (u8 *)&cdev->config;
 	u32 i, data, src_len = sizeof(cdev->config);
 
-	if (offset == offsetof(struct virtio_console_config, emerg_wr)) {
+	if (offset == offsetof(struct vmm_virtio_console_config, emerg_wr)) {
 		if (fifo_dequeue(cdev->emerg_rd, &data8)) {
 			data = (1 << 31) | data8;
 		} else {
@@ -258,13 +284,13 @@ static int virtio_console_read_config(struct virtio_device *dev,
 	return VMM_OK;
 }
 
-static int virtio_console_write_config(struct virtio_device *dev,
+static int virtio_console_write_config(struct vmm_virtio_device *dev,
 				       u32 offset, void *src, u32 src_len)
 {
 	u8 data;
 	struct virtio_console_dev *cdev = dev->emu_data;
 
-	if (offset == offsetof(struct virtio_console_config, emerg_wr)) {
+	if (offset == offsetof(struct vmm_virtio_console_config, emerg_wr)) {
 		switch (src_len) {
 		case 1:
 			data = *(u8 *)src;
@@ -287,7 +313,7 @@ static int virtio_console_write_config(struct virtio_device *dev,
 	return VMM_OK;
 }
 
-static int virtio_console_reset(struct virtio_device *dev)
+static int virtio_console_reset(struct vmm_virtio_device *dev)
 {
 	int rc;
 	struct virtio_console_dev *cdev = dev->emu_data;
@@ -296,12 +322,12 @@ static int virtio_console_reset(struct virtio_device *dev)
 		return VMM_EFAIL;
 	}
 
-	rc = virtio_queue_cleanup(&cdev->vqs[VIRTIO_CONSOLE_RX_QUEUE]);
+	rc = vmm_virtio_queue_cleanup(&cdev->vqs[VIRTIO_CONSOLE_RX_QUEUE]);
 	if (rc) {
 		return rc;
 	}
 
-	rc = virtio_queue_cleanup(&cdev->vqs[VIRTIO_CONSOLE_TX_QUEUE]);
+	rc = vmm_virtio_queue_cleanup(&cdev->vqs[VIRTIO_CONSOLE_TX_QUEUE]);
 	if (rc) {
 		return rc;
 	}
@@ -309,8 +335,8 @@ static int virtio_console_reset(struct virtio_device *dev)
 	return VMM_OK;
 }
 
-static int virtio_console_connect(struct virtio_device *dev, 
-				  struct virtio_emulator *emu)
+static int virtio_console_connect(struct vmm_virtio_device *dev,
+				  struct vmm_virtio_emulator *emu)
 {
 	struct virtio_console_dev *cdev;
 
@@ -321,10 +347,11 @@ static int virtio_console_connect(struct virtio_device *dev,
 	}
 	cdev->vdev = dev;
 
-	vmm_snprintf(cdev->name, VIRTIO_DEVICE_MAX_NAME_LEN, "%s", dev->name);
-	cdev->vser = vmm_vserial_create(cdev->name, 
-					&virtio_console_vserial_can_send, 
-					&virtio_console_vserial_send, 
+	vmm_snprintf(cdev->name, VMM_VIRTIO_DEVICE_MAX_NAME_LEN,
+		     "%s", dev->name);
+	cdev->vser = vmm_vserial_create(cdev->name,
+					&virtio_console_vserial_can_send,
+					&virtio_console_vserial_send,
 					VIRTIO_CONSOLE_VSERIAL_FIFO_SZ, cdev);
 	if (!cdev->vser) {
 		return VMM_EFAIL;
@@ -335,7 +362,7 @@ static int virtio_console_connect(struct virtio_device *dev,
 		vmm_vserial_destroy(cdev->vser);
 		return VMM_ENOMEM;
 	}
-	
+
 	cdev->config.cols = 80;
 	cdev->config.rows = 24;
 	cdev->config.max_nr_ports = 1;
@@ -345,7 +372,7 @@ static int virtio_console_connect(struct virtio_device *dev,
 	return VMM_OK;
 }
 
-static void virtio_console_disconnect(struct virtio_device *dev)
+static void virtio_console_disconnect(struct vmm_virtio_device *dev)
 {
 	struct virtio_console_dev *cdev = dev->emu_data;
 
@@ -354,12 +381,12 @@ static void virtio_console_disconnect(struct virtio_device *dev)
 	vmm_free(cdev);
 }
 
-struct virtio_device_id virtio_console_emu_id[] = {
-	{.type = VIRTIO_ID_CONSOLE},
+struct vmm_virtio_device_id virtio_console_emu_id[] = {
+	{ .type = VMM_VIRTIO_ID_CONSOLE },
 	{ },
 };
 
-struct virtio_emulator virtio_console = {
+struct vmm_virtio_emulator virtio_console = {
 	.name = "virtio_console",
 	.id_table = virtio_console_emu_id,
 
@@ -371,6 +398,7 @@ struct virtio_emulator virtio_console = {
 	.get_size_vq            = virtio_console_get_size_vq,
 	.set_size_vq            = virtio_console_set_size_vq,
 	.notify_vq              = virtio_console_notify_vq,
+	.status_changed         = virtio_console_status_changed,
 
 	/* Emulator operations */
 	.read_config = virtio_console_read_config,
@@ -382,12 +410,12 @@ struct virtio_emulator virtio_console = {
 
 static int __init virtio_console_init(void)
 {
-	return virtio_register_emulator(&virtio_console);
+	return vmm_virtio_register_emulator(&virtio_console);
 }
 
 static void __exit virtio_console_exit(void)
 {
-	virtio_unregister_emulator(&virtio_console);
+	vmm_virtio_unregister_emulator(&virtio_console);
 }
 
 VMM_DECLARE_MODULE(MODULE_DESC,

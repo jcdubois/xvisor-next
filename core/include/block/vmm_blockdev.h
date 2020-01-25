@@ -43,7 +43,9 @@ enum vmm_request_type {
 
 /** Representation of a block IO request */
 struct vmm_request {
-	struct vmm_blockdev *bdev; /* No need to set this field. 
+	struct dlist head;
+
+	struct vmm_blockdev *bdev; /* No need to set this field.
 				    * submit_request() will set this field.
 				    */
 
@@ -62,6 +64,30 @@ struct vmm_request_queue {
 	/* Lock to protect the request queue operations */
 	vmm_spinlock_t lock;
 
+	/* Max pending requests */
+	u32 max_pending;
+
+	/* Pending (or in-flight) request count */
+	u32 pending_count;
+
+	/* Backlog request count */
+	u32 backlog_count;
+
+	/* Backlog request list */
+	struct dlist backlog_list;
+
+	/* Note: if peek_cache succeeds then we assume
+	 * request completed successfully.
+	 *
+	 * Note: if peek_cache returns VMM_ENOTAVAIL then
+	 * we try make_request()
+	 *
+	 * Note: if peek_cache returns any other error then
+	 * we assume request failed.
+	 */
+	int (*peek_cache)(struct vmm_request_queue *rq,
+			  struct vmm_request *r);
+
 	/* Note: make_request must ensure that it calls
 	 *
 	 * vmm_blockdev_complete_request()
@@ -70,31 +96,38 @@ struct vmm_request_queue {
 	 *
 	 * for every request that it gets
 	 */
-	int (*make_request)(struct vmm_request_queue *rq, 
+	int (*make_request)(struct vmm_request_queue *rq,
 			    struct vmm_request *r);
 
 	/* Note: abort_request will be called for successfully
 	 * submited request only
 	 */
-	int (*abort_request)(struct vmm_request_queue *rq, 
+	int (*abort_request)(struct vmm_request_queue *rq,
 			    struct vmm_request *r);
 
 	/* Note: This is an optional callback only required
-	 * if request queue does block caching 
+	 * if request queue does block caching
 	 */
 	int (*flush_cache)(struct vmm_request_queue *rq);
 
 	void *priv;
 };
 
-#define INIT_REQUEST_QUEUE(rq) \
-		do { \
-			INIT_SPIN_LOCK(&(rq)->lock); \
-			(rq)->make_request = NULL; \
-			(rq)->abort_request = NULL; \
-			(rq)->flush_cache = NULL; \
-			(rq)->priv = NULL; \
-		} while (0)
+#define INIT_REQUEST_QUEUE(__rq, __max_pending, \
+			   __peek_cache, __make_request, \
+			   __abort_request, __flush_request, __priv) \
+	do { \
+		INIT_SPIN_LOCK(&(__rq)->lock); \
+		(__rq)->max_pending = (__max_pending); \
+		(__rq)->pending_count = 0; \
+		(__rq)->backlog_count = 0; \
+		INIT_LIST_HEAD(&(__rq)->backlog_list); \
+		(__rq)->peek_cache = (__peek_cache); \
+		(__rq)->make_request = (__make_request); \
+		(__rq)->abort_request = (__abort_request); \
+		(__rq)->flush_cache = (__flush_request); \
+		(__rq)->priv = (__priv); \
+	} while (0)
 
 /* Block device flags */
 #define VMM_BLOCKDEV_RDONLY				0x00000001
@@ -123,7 +156,7 @@ struct vmm_blockdev {
 	/* NOTE: partition managment uses part_manager_sign and
 	 * part_manager_priv for its own use.
 	 * NOTE: part_manager_sign will be unique to partition style
-	 * NOTE: part_manager_sign=0x0 is reserved and means unknown 
+	 * NOTE: part_manager_sign=0x0 is reserved and means unknown
 	 * partition style
 	 */
 	u32 part_manager_sign; /* To be used for partition managment */
@@ -166,18 +199,18 @@ int vmm_blockdev_submit_request(struct vmm_blockdev *bdev,
 /** Generic block IO abort request */
 int vmm_blockdev_abort_request(struct vmm_request *r);
 
-/** Generic block IO flush cached data 
- *  Note: block device request queue might cache blocks for 
+/** Generic block IO flush cached data
+ *  Note: block device request queue might cache blocks for
  *  better performance. This API is a hint to request queue
  *  that dirty cached blocks need to written back.
  */
 int vmm_blockdev_flush_cache(struct vmm_blockdev *bdev);
 
 /** Generic block IO read/write
- *  Note: This is a blocking API hence must be 
+ *  Note: This is a blocking API hence must be
  *  called from Orphan (or Thread) Context
  */
-u64 vmm_blockdev_rw(struct vmm_blockdev *bdev, 
+u64 vmm_blockdev_rw(struct vmm_blockdev *bdev,
 			enum vmm_request_type type,
 			u8 *buf, u64 off, u64 len);
 
@@ -195,13 +228,13 @@ struct vmm_blockdev *vmm_blockdev_alloc(void);
 /** Free block device */
 void vmm_blockdev_free(struct vmm_blockdev *bdev);
 
-/** Register block device to device driver framework 
- *  Note: Block device must have RDONLY or RW flag set. 
+/** Register block device to device driver framework
+ *  Note: Block device must have RDONLY or RW flag set.
  */
 int vmm_blockdev_register(struct vmm_blockdev *bdev);
 
 /** Add child block device and register it. */
-int vmm_blockdev_add_child(struct vmm_blockdev *bdev, 
+int vmm_blockdev_add_child(struct vmm_blockdev *bdev,
 			   u64 start_lba, u64 num_blocks);
 
 /** Unregister block device from device driver framework */

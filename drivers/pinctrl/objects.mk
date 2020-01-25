@@ -28,6 +28,3 @@ drivers-objs-$(CONFIG_PINMUX)		+= pinctrl/pinmux.o
 drivers-objs-$(CONFIG_PINCONF)		+= pinctrl/pinconf.o
 drivers-objs-$(CONFIG_GENERIC_PINCONF)	+= pinctrl/pinconf-generic.o
 drivers-objs-$(CONFIG_PINCTRL_SUNXI)	+= pinctrl/pinctrl-sunxi.o
-drivers-objs-$(CONFIG_PINCTRL_IMX)	+= pinctrl/pinctrl-imx.o
-drivers-objs-$(CONFIG_PINCTRL_IMX6Q)	+= pinctrl/pinctrl-imx6q.o
-drivers-objs-$(CONFIG_PINCTRL_IMX25)	+= pinctrl/pinctrl-imx25.o

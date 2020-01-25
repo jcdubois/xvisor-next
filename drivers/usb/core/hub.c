@@ -336,24 +336,43 @@ static void usb_hub_free(struct usb_hub_device *hub)
 
 static void show_string(struct usb_device *udev, char *id, char *string)
 {
-	if (!string)
+	if (!string || string[0] == '\0')
 		return;
 	vmm_printf("%s: %s = %s\n", udev->dev.name, id, string);
 }
 
 static void usb_announce_device(struct usb_device *udev)
 {
-	vmm_printf("%s: New USB device found, idVendor=%04x, idProduct=%04x\n",
-		   udev->dev.name, vmm_le16_to_cpu(udev->descriptor.idVendor),
+	const char *speed_str = NULL;
+
+	switch (udev->speed) {
+	case USB_SPEED_SUPER:
+		speed_str = "super-speed";
+		break;
+	case USB_SPEED_HIGH:
+		speed_str = "high-speed";
+		break;
+	case USB_SPEED_LOW:
+		speed_str = "low-speed";
+		break;
+	default:
+		speed_str = "full-speed";
+		break;
+	};
+
+	vmm_printf("%s: New USB %s device found, "
+		   "idVendor=%04x, idProduct=%04x\n",
+		   udev->dev.name, speed_str,
+		   vmm_le16_to_cpu(udev->descriptor.idVendor),
 		   vmm_le16_to_cpu(udev->descriptor.idProduct));
 	show_string(udev, "Product", udev->product);
 	show_string(udev, "Manufacturer", udev->manufacturer);
 	show_string(udev, "SerialNumber", udev->serial);
 }
 
-static int usb_set_address(struct usb_device *dev, u32 addr)
+static int usb_set_address(struct usb_device *dev, u8 addr)
 {
-	DPRINTF("%s: set address %d\n", __func__, dev->devnum);
+	DPRINTF("%s: set address %d\n", __func__, addr);
 	return usb_control_msg(dev, usb_snddefctrl(dev),
 				USB_REQ_SET_ADDRESS, 0,
 				addr, 0, NULL, 0, NULL, USB_CNTL_TIMEOUT);
@@ -698,15 +717,13 @@ static void usb_hub_power_on(struct usb_hub_device *hub)
 	}
 	usb_ref_device(dev);
 
-	/* Enable power to the ports:
-	 * Here we Power-cycle the ports: aka,
-	 * turning them off and turning on again.
-	 */
-	DPRINTF("%s: enabling power on all ports\n", __func__);
+	/* Disable power to the ports */
+	DPRINTF("%s: disabling power on all ports\n", __func__);
 	for (i = 0; i < dev->maxchild; i++) {
-		usb_hub_clear_port_feature(dev, i + 1, USB_PORT_FEAT_POWER);
-		DPRINTF("%s: port %d returns 0x%lx\n",
-			__func__, i + 1, dev->status);
+		ret = usb_hub_clear_port_feature(dev, i + 1,
+						 USB_PORT_FEAT_POWER);
+		DPRINTF("%s: port %d returns %d\n",
+			__func__, i + 1, ret);
 	}
 
 	/* Wait at least 2*bPwrOn2PwrGood for PP to change */
@@ -740,10 +757,13 @@ static void usb_hub_power_on(struct usb_hub_device *hub)
 		}
 	}
 
+	/* Enable power to the ports */
+	DPRINTF("%s: enabling power on all ports\n", __func__);
 	for (i = 0; i < dev->maxchild; i++) {
-		usb_hub_set_port_feature(dev, i + 1, USB_PORT_FEAT_POWER);
-		DPRINTF("%s: port %d returns 0x%lx\n",
-			__func__, i + 1, dev->status);
+		ret = usb_hub_set_port_feature(dev, i + 1,
+					       USB_PORT_FEAT_POWER);
+		DPRINTF("%s: port %d returns %d\n",
+			__func__, i + 1, ret);
 	}
 
 	/* Wait for power to become stable */
@@ -760,7 +780,7 @@ static void usb_hub_power_on(struct usb_hub_device *hub)
 static int usb_hub_configure(struct usb_device *dev,
 			     struct usb_interface *intf)
 {
-	int i, err = VMM_OK;
+	int i, length, err = VMM_OK;
 	u8 *bitmap, *buffer;
 	u16 hubCharacteristics;
 	struct usb_hub_device *hub;
@@ -785,29 +805,23 @@ static int usb_hub_configure(struct usb_device *dev,
 	hub->intf = intf;
 
 	/* Get Hub descriptor */
-	if (usb_hub_get_descriptor(dev, buffer, 4) < 0) {
-		DPRINTF("%s: failed to get hub descriptor, giving up 0x%lx\n",
-			__func__, dev->status);
+	err = usb_hub_get_descriptor(dev, buffer, 4);
+	if (err < 0) {
+		DPRINTF("%s: failed to get hub descriptor error %d\n",
+			__func__, err);
 		usb_hub_free(hub);
-		err = VMM_EFAIL;
 		goto done;
 	}
 	descriptor = (struct usb_hub_descriptor *)buffer;
 
-	/* Silence compiler warning if USB_BUFSIZ is > 256 [= sizeof(char)] */
-	if (descriptor->bLength > USB_BUFSIZ) {
-		DPRINTF("%s: failed to hub descriptor too long: %d\n",
-			__func__, descriptor->bLength);
-		usb_hub_free(hub);
-		err = VMM_EINVALID;
-		goto done;
-	}
+	length = min_t(int, descriptor->bLength,
+			sizeof(struct usb_hub_descriptor));
 
-	if (usb_hub_get_descriptor(dev, buffer, descriptor->bLength) < 0) {
-		DPRINTF("%s: failed to hub descriptor 2nd giving up 0x%lx\n",
-			__func__, dev->status);
+	err = usb_hub_get_descriptor(dev, buffer, length);
+	if (err < 0) {
+		DPRINTF("%s: failed to get hub descriptor error %d\n",
+			__func__, err);
 		usb_hub_free(hub);
-		err = VMM_EFAIL;
 		goto done;
 	}
 	memcpy(&hub->desc, buffer, descriptor->bLength);
@@ -855,7 +869,7 @@ static int usb_hub_configure(struct usb_device *dev,
 	if (hubCharacteristics & HUB_CHAR_COMPOUND) {
 		DPRINTF("%s: part of a compound device\n", __func__);
 	} else {
-		DPRINTF("%: standalone hub\n", __func__);
+		DPRINTF("%s: standalone hub\n", __func__);
 	}
 
 	switch (hubCharacteristics & HUB_CHAR_OCPM) {
@@ -879,7 +893,7 @@ static int usb_hub_configure(struct usb_device *dev,
 
 	for (i = 0; i < dev->maxchild; i++) {
 		DPRINTF("%s: port %d is%s removable\n", __func__, i + 1,
-			hub->desc.DeviceRemovable[(i + 1) / 8] & \
+			hub->desc.u.hs.DeviceRemovable[(i + 1) / 8] & \
 			(1 << ((i + 1) % 8)) ? " not" : "");
 	}
 
@@ -891,11 +905,11 @@ static int usb_hub_configure(struct usb_device *dev,
 		goto done;
 	}
 
-	if (usb_hub_get_status(dev, buffer) < 0) {
-		DPRINTF("%s: failed to get Status 0x%lx\n",
-			__func__, dev->status);
+	err = usb_hub_get_status(dev, buffer);
+	if (err < 0) {
+		DPRINTF("%s: failed to get status error %d\n",
+			__func__, err);
 		usb_hub_free(hub);
-		err = VMM_EFAIL;
 		goto done;
 	}
 
@@ -933,11 +947,10 @@ done:
 static int usb_hub_detect_new_device(struct usb_device *parent,
 				     struct usb_device *dev)
 {
-	u32 i, addr;
-	u8 *tmpbuf;
+	u32 i;
+	u8 *tmpbuf, addr;
 	u16 portstatus;
 	int err, port = -1;
-	struct usb_device_descriptor *desc;
 	enum usb_device_state state;
 
 	usb_ref_device(dev);
@@ -968,31 +981,52 @@ static int usb_hub_detect_new_device(struct usb_device *parent,
 	 * thread_id=5729457&forum_id=5398
 	 */
 
-	/* Send 64-byte GET-DEVICE-DESCRIPTOR request.  Since the descriptor is
+	/*
+	 * send 64-byte GET-DEVICE-DESCRIPTOR request.  Since the descriptor is
 	 * only 18 bytes long, this will terminate with a short packet.  But if
 	 * the maxpacket size is 8 or 16 the device may be waiting to transmit
-	 * some more, or keeps on retransmitting the 8 byte header. */
+	 * some more, or keeps on retransmitting the 8 byte header.
+	 */
 
-	desc = (struct usb_device_descriptor *)tmpbuf;
-	dev->descriptor.bMaxPacketSize0 = 64;	    /* Start off at 64 bytes  */
-	/* Default to 64 byte max packet size */
-	dev->maxpacketsize = PACKET_SIZE_64;
-	dev->epmaxpacketin[0] = 64;
-	dev->epmaxpacketout[0] = 64;
+	if (dev->speed == USB_SPEED_LOW) {
+		dev->descriptor.bMaxPacketSize0 = 8;
+		dev->maxpacketsize = PACKET_SIZE_8;
+	} else {
+		dev->descriptor.bMaxPacketSize0 = 64;
+		dev->maxpacketsize = PACKET_SIZE_64;
+	}
+	dev->epmaxpacketin[0] = dev->descriptor.bMaxPacketSize0;
+	dev->epmaxpacketout[0] = dev->descriptor.bMaxPacketSize0;
 
-	err = usb_get_descriptor(dev, USB_DT_DEVICE, 0, desc, 64);
+	err = usb_get_descriptor(dev, USB_DT_DEVICE, 0, tmpbuf, 8);
 	if (err) {
 		vmm_printf("%s: usb_get_descriptor() failed\n", __func__);
 		dev->devnum = addr;
 		goto done;
 	}
+	memcpy(&dev->descriptor, tmpbuf, sizeof(dev->descriptor));
 
-	dev->descriptor.bMaxPacketSize0 = desc->bMaxPacketSize0;
-	/*
-	 * Fetch the device class, driver can use this info
-	 * to differentiate between HUB and DEVICE.
-	 */
-	dev->descriptor.bDeviceClass = desc->bDeviceClass;
+	dev->epmaxpacketin[0] = dev->descriptor.bMaxPacketSize0;
+	dev->epmaxpacketout[0] = dev->descriptor.bMaxPacketSize0;
+	switch (dev->descriptor.bMaxPacketSize0) {
+	case 8:
+		dev->maxpacketsize  = PACKET_SIZE_8;
+		break;
+	case 16:
+		dev->maxpacketsize = PACKET_SIZE_16;
+		break;
+	case 32:
+		dev->maxpacketsize = PACKET_SIZE_32;
+		break;
+	case 64:
+		dev->maxpacketsize = PACKET_SIZE_64;
+		break;
+	default:
+		vmm_printf("%s: invalid max packet size\n", __func__);
+		err = VMM_EIO;
+		dev->devnum = addr;
+		goto done;
+	}
 
 	/* Mark device as attached */
 	usb_set_device_state(dev, USB_STATE_ATTACHED);
@@ -1025,23 +1059,6 @@ static int usb_hub_detect_new_device(struct usb_device *parent,
 			dev->devnum = addr;
 			goto done;
 		}
-	}
-
-	dev->epmaxpacketin[0] = dev->descriptor.bMaxPacketSize0;
-	dev->epmaxpacketout[0] = dev->descriptor.bMaxPacketSize0;
-	switch (dev->descriptor.bMaxPacketSize0) {
-	case 8:
-		dev->maxpacketsize  = PACKET_SIZE_8;
-		break;
-	case 16:
-		dev->maxpacketsize = PACKET_SIZE_16;
-		break;
-	case 32:
-		dev->maxpacketsize = PACKET_SIZE_32;
-		break;
-	case 64:
-		dev->maxpacketsize = PACKET_SIZE_64;
-		break;
 	}
 
 	/* Mark device as powered */
@@ -1292,7 +1309,7 @@ static int usb_hub_poll_status(struct usb_hub_device *hub)
 		err = usb_hub_get_port_status(dev, i + 1, &portsts);
 		if (err < 0) {
 			DPRINTF("%s: dev %s port %d get_port_status failed\n",
-				__func__, i + 1, dev->dev.name);
+				__func__, dev->dev.name, i + 1);
 			continue;
 		}
 		portstatus = vmm_le16_to_cpu(portsts.wPortStatus);

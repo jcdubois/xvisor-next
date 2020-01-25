@@ -152,6 +152,7 @@ int __init arch_board_final_init(void)
 {
 	int rc;
 	struct vmm_devtree_node *node;
+	struct vmm_devtree_node *root;
 #if defined(CONFIG_VTEMU)
 	struct fb_info *info;
 #endif
@@ -159,18 +160,24 @@ int __init arch_board_final_init(void)
 	/* All VMM API's are available here */
 	/* We can register a Board specific resource here */
 
-	/* Find simple-bus node */
-	node = vmm_devtree_find_compatible(NULL, NULL, "simple-bus");
-	if (!node) {
-		return VMM_ENODEV;
+	root = vmm_devtree_getnode("/");
+
+	vmm_devtree_for_each_child(node, root) {
+		/* check if node has compatible attribute */
+		if (!vmm_devtree_getattr(node,
+				VMM_DEVTREE_COMPATIBLE_ATTR_NAME)) {
+			continue;
+		}
+
+		/* Do platform device probing using device driver framework */
+		rc = vmm_platform_probe(node);
+		if (rc) {
+			vmm_devtree_dref_node(node);
+			return rc;
+		}
 	}
 
-	/* Do platform device probing using device driver framework */
-	rc = vmm_platform_probe(node);
-	vmm_devtree_dref_node(node);
-	if (rc) {
-		return rc;
-	}
+	vmm_devtree_dref_node(root);
 
 	/* Create VTEMU instace if available */
 #if defined(CONFIG_VTEMU)

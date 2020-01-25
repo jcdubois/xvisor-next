@@ -795,6 +795,9 @@ int cpu_mmu_unmap_l2tbl_page(struct cpu_l2tbl *l2,
 			ret = VMM_OK;
 		}
 		break;
+	case TTBL_L2TBL_TTE_TYPE_FAULT:
+		ret = VMM_OK;
+		break;
 	default:
 		break;
 	}
@@ -829,6 +832,9 @@ int cpu_mmu_unmap_l2tbl_page(struct cpu_l2tbl *l2,
 			ret = VMM_OK;
 		}
 		break;
+	case TTBL_L2TBL_TTE_TYPE_FAULT:
+		ret = VMM_OK;
+		break;
 	default:
 		break;
 	}
@@ -855,7 +861,7 @@ int cpu_mmu_map_page(struct cpu_l1tbl *l1, struct cpu_page *pg)
 	u32 ite, l1_tte_type;
 	virtual_addr_t pgva;
 	virtual_size_t pgsz, minpgsz;
-	physical_addr_t l2base;
+	physical_addr_t l2base, pgpa;
 	struct cpu_page upg;
 	struct cpu_l2tbl *l2;
 
@@ -889,13 +895,20 @@ int cpu_mmu_map_page(struct cpu_l1tbl *l1, struct cpu_page *pg)
 		}
 		pgva = pg->va & ~(pg->sz - 1);
 		pgva = pgva & ~(minpgsz - 1);
+		pgpa = pg->pa & ~(pg->sz - 1);
+		pgpa = pgpa & ~(minpgsz - 1);
 		pgsz = pg->sz;
 		while (pgsz) {
 			if (!cpu_mmu_get_page(l1, pgva, &upg)) {
-				rc = VMM_EFAIL;
-				goto mmu_map_return;
+				if (pgva != upg.va ||
+				    pgpa != upg.pa ||
+				    minpgsz != upg.sz) {
+					rc = VMM_EFAIL;
+					goto mmu_map_return;
+				}
 			}
 			pgva += minpgsz;
+			pgpa += minpgsz;
 			pgsz = (pgsz < minpgsz) ? 0 : (pgsz - minpgsz);
 		}
 	}
@@ -1697,18 +1710,28 @@ int __cpuinit arch_cpu_aspace_memory_rwinit(virtual_addr_t tmp_va)
 
 #endif
 
+u32 arch_cpu_aspace_hugepage_log2size(void)
+{
+	return TTBL_L1TBL_SECTION_PAGE_SHIFT;
+}
+
 int arch_cpu_aspace_map(virtual_addr_t page_va,
+			virtual_size_t page_sz,
 			physical_addr_t page_pa,
 			u32 mem_flags)
 {
 	struct cpu_page p;
+
+	if (page_sz != TTBL_L2TBL_SMALL_PAGE_SIZE &&
+	    page_sz != TTBL_L1TBL_SECTION_PAGE_SIZE)
+		return VMM_EINVALID;
 
 	memset(&p, 0, sizeof(p));
 
 	/* Initialize the page struct */
 	p.pa = page_pa;
 	p.va = page_va;
-	p.sz = VMM_PAGE_SIZE;
+	p.sz = page_sz;
 	p.dom = TTBL_L1TBL_TTE_DOM_RESERVED;
 
 #if defined(CONFIG_ARMV5)
@@ -2022,4 +2045,3 @@ int __cpuinit arch_cpu_aspace_secondary_init(void)
 
 	return VMM_OK;
 }
-

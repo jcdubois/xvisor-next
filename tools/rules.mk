@@ -11,12 +11,12 @@
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation; either version 2, or (at your option)
 # any later version.
-# 
+#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-# 
+#
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
@@ -26,31 +26,26 @@
 # @brief Rules to build & use tools
 # */
 
-$(build_dir)/tools/dtc/bin/dtc: $(CURDIR)/tools/dtc/Makefile
-	$(V)mkdir -p `dirname $@`
-	$(if $(V), @echo " (make)      $(subst $(build_dir)/,,$@)")
-	$(V)$(MAKE) -C $(CURDIR)/tools/dtc LINK.c=gcc CC=gcc LD=gcc AR=ar PREFIX=$(build_dir)/tools/dtc install
-
 dtsflags = $(cppflags) -nostdinc -nostdlib -fno-builtin -D__DTS__ -x assembler-with-cpp
 
-$(build_dir)/%.dep: $(src_dir)/%.dts $(build_dir)/tools/dtc/bin/dtc
+$(build_dir)/%.dep: $(src_dir)/%.dts
 	$(V)mkdir -p `dirname $@`
 	$(if $(V), @echo " (dtc-dep)   $(subst $(build_dir)/,,$@)")
-	$(V)$(cpp) $(dtsflags) $< | $(build_dir)/tools/dtc/bin/dtc -Wno-unit_address_vs_reg -d $@ -I dts -O dtb -i `dirname $<` -o /dev/null
+	$(V)$(CPP) $(dtsflags) $< | $(DTC) -q -d $@ -I dts -O dtb -i `dirname $<` -o /dev/null
 	$(V)sed -i "s|/dev/null|$(subst .dep,.dtb,$@)|g" $@
 	$(V)sed -i "s|<stdin>|$<|g" $@
-	$(V)$(cc) $(dtsflags) -MT $(subst .dep,.dtb,$@) -MM $< >> $@
+	$(V)$(CC) $(dtsflags) -MT $(subst .dep,.dtb,$@) -MM $< >> $@
 
-$(build_dir)/%.dtb: $(src_dir)/%.dts $(build_dir)/tools/dtc/bin/dtc
+$(build_dir)/%.dtb: $(src_dir)/%.dts
 	$(V)mkdir -p `dirname $@`
 	$(if $(V), @echo " (dtc)       $(subst $(build_dir)/,,$@)")
-	$(V)$(cpp) $(dtsflags) $< | $(build_dir)/tools/dtc/bin/dtc -Wno-unit_address_vs_reg -p 0x100 -I dts -O dtb -i `dirname $<` -o $@
+	$(V)$(CPP) $(dtsflags) $< | $(DTC) -q -p 0x100 -I dts -O dtb -i `dirname $<` -o $@
 
-$(build_dir)/%.S: $(src_dir)/%.dts $(build_dir)/tools/dtc/bin/dtc
+$(build_dir)/%.S: $(src_dir)/%.dts
 	$(V)mkdir -p `dirname $@`
 	$(if $(V), @echo " (dtc)       $(subst $(build_dir)/,,$@)")
 	$(V)echo '.section ".devtree"' > $@
-	$(V)$(cpp) $(dtsflags) $< | $(build_dir)/tools/dtc/bin/dtc -Wno-unit_address_vs_reg -I dts -O asm -i `dirname $<` >> $@
+	$(V)$(CPP) $(dtsflags) $< | $(DTC) -q -I dts -O asm -i `dirname $<` >> $@
 
 $(build_dir)/%.dep: $(src_dir)/%.data
 	$(V)mkdir -p `dirname $@`
@@ -101,4 +96,3 @@ $(build_dir)/%.S: $(build_dir)/%.map $(build_dir)/tools/kallsyms/kallsyms
 	$(V)mkdir -p `dirname $@`
 	$(if $(V), @echo " (kallsyms)  $(subst $(build_dir)/,,$@)")
 	$(V)$(build_dir)/tools/kallsyms/kallsyms --all-symbols < $< > $@
-

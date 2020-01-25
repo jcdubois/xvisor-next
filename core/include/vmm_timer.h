@@ -6,12 +6,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
@@ -69,20 +69,40 @@ struct vmm_timer_event {
 #define DECLARE_TIMER_EVENT(ev, _hndl, _priv)		\
 	struct vmm_timer_event ev = __TIMER_EVENT_INITIALIZER(ev, _hndl, _priv)
 
+/** Get timer clocksource frequency */
+u32 vmm_timer_clocksource_frequency(void);
+
+/** Get timer clockchip frequency */
+u32 vmm_timer_clockchip_frequency(void);
+
 /** Check if timer event is pending */
 bool vmm_timer_event_pending(struct vmm_timer_event *ev);
 
 /** Return the absolute timestamp at which timer event will expire */
 u64 vmm_timer_event_expiry_time(struct vmm_timer_event *ev);
 
+/** Start a timer event and return expiry time */
+int vmm_timer_event_start2(struct vmm_timer_event *ev,
+			   u64 duration_nsecs, u64 *ret_expiry_tstamp);
+
 /** Start a timer event */
-int vmm_timer_event_start(struct vmm_timer_event *ev, u64 duration_nsecs);
+static inline int vmm_timer_event_start(struct vmm_timer_event *ev,
+					u64 duration_nsecs)
+{
+	return vmm_timer_event_start2(ev, duration_nsecs, NULL);
+}
 
 /** Restart a timer event */
 int vmm_timer_event_restart(struct vmm_timer_event *ev);
 
 /** Stop a timer event */
 int vmm_timer_event_stop(struct vmm_timer_event *ev);
+
+/** Convert given cycles to nanoseconds */
+u64 vmm_timer_cycles_to_ns(u64 cycles);
+
+/** Compute delta of given cycles and current cycles in-terms of nanoseconds */
+u64 vmm_timer_delta_cycles_to_ns(u64 cycles);
 
 /** Current global timestamp (nanoseconds elapsed) */
 u64 vmm_timer_timestamp(void);

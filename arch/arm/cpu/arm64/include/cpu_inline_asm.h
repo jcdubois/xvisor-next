@@ -6,12 +6,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
@@ -49,81 +49,66 @@
 #define clrex()			asm volatile("clrex\n\t")
 
 /* Sysreg access */
-
-asm(
-"	.irp	num,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30\n"
-"	.equ	.L__reg_num_x\\num, \\num\n"
-"	.endr\n"
-"	.equ	.L__reg_num_xzr, 31\n"
-"\n"
-"	.macro	mrs_s, rt, sreg\n"
-"	.inst	0xd5200000|(\\sreg)|(.L__reg_num_\\rt)\n"
-"	.endm\n"
-"\n"
-"	.macro	msr_s, sreg, rt\n"
-"	.inst	0xd5000000|(\\sreg)|(.L__reg_num_\\rt)\n"
-"	.endm\n"
-);
-
-#define read_sysreg(r) ({					\
-	u64 __val;						\
-	asm volatile("mrs %0, " stringify(r) : "=r" (__val));	\
-	__val;							\
+#define read_sysreg(__r) ({					\
+	u64 __v;						\
+	asm volatile("mrs_s %0, " stringify(__r) : "=r" (__v));	\
+	__v;							\
 })
 
-#define write_sysreg(v, r)	do {				\
-	u64 __val = (u64)(v);					\
-	asm volatile("msr " stringify(r) ", %0"			\
-		     : : "r" (__val));				\
+#define write_sysreg(__v, __r)	do {				\
+	asm volatile("msr_s " stringify(__r) ", %0"		\
+		     : : "r" ((u64)(__v)));			\
 } while (0)
 
-#define mrs(spr)		({				\
-	u64 __val;						\
-	asm volatile("mrs %0," stringify(spr) :"=r"(__val));	\
-	__val;							\
+#define mrs(__spr)		({				\
+	u64 __v;						\
+	asm volatile("mrs %0," stringify(__spr) :"=r"(__v));	\
+	__v;							\
 })
 
-#define msr(spr, __val)		do {				\
-	asm volatile("msr " stringify(spr) ", %0"		\
-		     : : "r" (__val));				\
+#define msr(__spr, __v)		do {				\
+	asm volatile("msr " stringify(__spr) ", %0"		\
+		     : : "r" (__v));				\
 } while (0)
 
-#define msr_sync(spr, __val)	do {				\
-	asm volatile("msr " stringify(spr) ", %0\n\t"		\
+#define msr_sync(__spr, __v)	do {				\
+	asm volatile("msr " stringify(__spr) ", %0\n\t"		\
 		     "dsb sy\n\t"				\
 		     "isb\n\t"					\
-		     : : "r" (__val));				\
+		     : : "r" (__v));				\
 } while (0)
+
+#define read_mpidr()		mrs(mpidr_el1)
 
 /* TLB maintainence */
 
 #define inv_tlb_hyp_all()	asm volatile("tlbi alle2is\n\t" \
-					     "dsb sy\n\t" \
+					     "dsb ish\n\t" \
 					     "isb\n\t" \
 					     ::: "memory", "cc")
 
 #define inv_tlb_guest_allis()	asm volatile("tlbi alle1is\n\t" \
-					     "dsb sy\n\t" \
+					     "dsb ish\n\t" \
 					     "isb\n\t" \
 					     ::: "memory", "cc")
 
 #define inv_tlb_guest_cur()	asm volatile("tlbi vmalls12e1is\n\t" \
-					     "dsb sy\n\t" \
+					     "dsb ish\n\t" \
 					     "isb\n\t" \
 					     ::: "memory", "cc")
 
 #define inv_tlb_hyp_vais(va)	asm volatile("tlbi vae2is, %0\n\t" \
-					     "dsb sy\n\t" \
+					     "dsb ish\n\t" \
 					     "isb\n\t" \
 					     ::"r"((va)>>12): "memory", "cc")
 
 #define inv_tlb_guest_ipa(va)	asm volatile("tlbi ipas2e1is, %0\n\t" \
-					     "dsb sy\n\t" \
+					     "dsb ish\n\t" \
 					     "isb\n\t" \
 					     ::"r"((va)>>12): "memory", "cc")
 
 #define inv_tlb_guest_va(va)	asm volatile("tlbi vaae1is, %0\n\t" \
-					     "dsb sy\n\t" \
+					     "dsb ish\n\t" \
 					     "isb\n\t" \
 					     ::"r"((va)>>12): "memory", "cc")
 
@@ -142,6 +127,18 @@ asm(
 					: : "r"(va) : "memory", "cc");
 
 /* CPU feature checking macros */
+
+#define cpu_supports_address_auth_arch() ({ u64 isar1; \
+				   asm volatile("mrs %0, id_aa64isar1_el1" \
+						: "=r"(isar1)); \
+				   (isar1 & ID_AA64ISAR1_APA_MASK); \
+				})
+
+#define cpu_supports_address_auth_imp() ({ u64 isar1; \
+				   asm volatile("mrs %0, id_aa64isar1_el1" \
+						: "=r"(isar1)); \
+				   (isar1 & ID_AA64ISAR1_API_MASK); \
+				})
 
 #define cpu_supports_thumbee()	({ u64 pfr0; \
 				   asm volatile("mrs %0, id_pfr0_el1" \
@@ -176,13 +173,13 @@ asm(
 #define cpu_supports_asimd()	({ u64 pfr0; \
 				   asm volatile("mrs %0, id_aa64pfr0_el1" \
 						: "=r"(pfr0)); \
-				   ((pfr0 & ID_AA64PFR0_ASIMD_MASK) == 0); \
+				   ((pfr0 & ID_AA64PFR0_ASIMD_MASK) != 0xf); \
 				})
 
 #define cpu_supports_fpu()	({ u64 pfr0; \
 				   asm volatile("mrs %0, id_aa64pfr0_el1" \
 						: "=r"(pfr0)); \
-				   ((pfr0 & ID_AA64PFR0_FPU_MASK) == 0); \
+				   ((pfr0 & ID_AA64PFR0_FPU_MASK) != 0xf); \
 				})
 
 #define cpu_supports_el0_a32()	({ u64 pfr0; \
