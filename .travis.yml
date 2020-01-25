@@ -1,4 +1,4 @@
-dist: trusty
+dist: bionic
 
 language: c
 
@@ -8,10 +8,11 @@ compiler:
 script: tools/scripts/makeall
 
 before_install:
-  - sudo add-apt-repository ppa:team-gcc-arm-embedded/ppa -y
   - sudo apt-get -q update
-  - sudo apt-get install -y gcc-arm-embedded
-  - sudo apt-get install -y gcc-aarch64-linux-gnu
+  - sudo apt-get install -y gcc-8-aarch64-linux-gnu
+  - sudo apt-get install -y gcc-8-arm-linux-gnueabi
+  - sudo apt-get install -y gcc-8-riscv64-linux-gnu
+  - sudo apt-get install -y gcc-8
 
 notifications:
   email:
