@@ -22,6 +22,7 @@
 # @brief list of freescale DTBs.
 # */
 
+arch-dtbs-$(CONFIG_ARMV7A_VE)+=freescale/imx6ul-14x14-evk.dtb
 arch-dtbs-$(CONFIG_ARMV7A)+=freescale/imx6dl-sabrelite.dtb
 arch-dtbs-$(CONFIG_ARMV7A)+=freescale/sabrelite/one_guest_sabrelite.dtb
 arch-dtbs-$(CONFIG_ARMV7A)+=freescale/sabrelite/two_guest_sabrelite.dtb
