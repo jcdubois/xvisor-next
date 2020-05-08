@@ -386,6 +386,8 @@ static int imx_driver_remove(struct vmm_device *dev)
 
 static struct vmm_devtree_nodeid imx_devid_table[] = {
 	{.compatible = "freescale,imx-uart"},
+	{.compatible = "fsl,imx6ul-uart"},
+	{.compatible = "fsl,imx6q-uart"},
 	{ /* end of list */ },
 };
 

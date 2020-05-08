@@ -646,6 +646,8 @@ static struct vmm_devtree_nodeid defterm_devid_table[] = {
 	{ .compatible = "freescale", .data = &imx_ops },
 	{ .compatible = "imx-uart", .data = &imx_ops },
 	{ .compatible = "freescale,imx-uart", .data = &imx_ops },
+	{ .compatible = "fsl,imx6ul-uart", .data = &imx_ops },
+	{ .compatible = "fsl,imx6q-uart", .data = &imx_ops },
 	{ .compatible = "samsung", .data = &samsung_ops },
 	{ .compatible = "exynos4210-uart", .data = &samsung_ops },
 	{ .compatible = "samsung,exynos4210-uart", .data = &samsung_ops },
